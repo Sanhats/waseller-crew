@@ -34,8 +34,10 @@ from crew_shadow_crewai.models import (
 
 log = logging.getLogger(__name__)
 
-# Forzar stub sin llamar al LLM (útil en CI o para aprender el cable HTTP primero).
-_USE_STUB = os.environ.get("USE_CREW_STUB", "").lower() in ("1", "true", "yes")
+
+def _use_crew_stub() -> bool:
+    """Leer en cada request: en Railway/Ops a veces se cambia env y se reinicia tarde el proceso."""
+    return os.environ.get("USE_CREW_STUB", "").strip().lower() in ("1", "true", "yes")
 
 
 def _stub_interpretation(body: ShadowCompareRequest) -> CandidateInterpretation | None:
@@ -203,7 +205,7 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
 
 
 def run_crew(body: ShadowCompareRequest) -> ShadowCompareResponse:
-    if _USE_STUB:
+    if _use_crew_stub():
         log.info("USE_CREW_STUB activo: respuesta stub")
         return _stub_response(body)
     if not os.environ.get("OPENAI_API_KEY"):
