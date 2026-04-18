@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "kind": "waseller.shadow_compare.v1",
+  "tenantId": "00000000-0000-4000-8000-000000000001",
+  "leadId": "00000000-0000-4000-8000-000000000002",
+  "incomingText": "Cuánto sale la remera negra talle M?",
+  "interpretation": {
+    "intent": "consultar_precio",
+    "confidence": 0.88,
+    "entities": {
+      "productName": "Remera negra",
+      "variantAttributes": { "talle": "M", "color": "negro" }
+    },
+    "references": [],
+    "missingFields": [],
+    "nextAction": "reply_only",
+    "source": "openai"
+  },
+  "baselineDecision": {
+    "intent": "consultar_precio",
+    "leadStage": "consideration",
+    "confidence": 0.72,
+    "entities": {},
+    "nextAction": "reply_only",
+    "reason": "baseline_waseller",
+    "requiresHuman": false,
+    "recommendedAction": "reply_only",
+    "draftReply": "La remera negra talle M sale $15000. ¿Te reservo una?",
+    "handoffRequired": false,
+    "qualityFlags": [],
+    "source": "llm",
+    "executionMode": "shadow",
+    "policy": {
+      "recommendedAction": "reply_only",
+      "executedAction": "shadow_recommendation_only",
+      "shadowMode": true,
+      "allowSensitiveActions": false
+    }
+  }
+}
