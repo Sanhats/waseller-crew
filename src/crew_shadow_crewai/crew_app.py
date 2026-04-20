@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 from crewai import Agent, Crew, Process, Task
@@ -33,6 +34,73 @@ from crew_shadow_crewai.models import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _default_tenant_prompts_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "tenant_prompts"
+
+
+def _load_tenant_prompt_overlay(slug: str | None) -> str:
+    """Texto opcional desde tenant_prompts/<slug>.txt o CREW_TENANT_PROMPTS_DIR."""
+    if not slug:
+        return ""
+    raw = os.environ.get("CREW_TENANT_PROMPTS_DIR", "").strip()
+    base = Path(raw).expanduser() if raw else _default_tenant_prompts_dir()
+    path = base / f"{slug}.txt"
+    if not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            return ""
+        return (
+            f"\n\n=== Instrucciones del perfil comercial ({slug}) ===\n{text}\n"
+            "=== Fin perfil ===\n"
+        )
+    except OSError:
+        log.warning("No se pudo leer overlay de tenant: %s", path)
+        return ""
+
+
+def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
+    """Reglas fijas: vendedor del tenant + uso honesto de stockTable + ventana de mensajes."""
+    rows = body.stockTable
+    if rows is None:
+        stock_hint = (
+            "stockTable no viene en el payload: no afirmes existencias, precios ni SKU concretos "
+            "salvo que ya estén redactados de forma explícita en baselineDecision.draftReply "
+            "o en interpretation (y aun así no contradigas políticas obvias)."
+        )
+    elif len(rows) == 0:
+        stock_hint = (
+            "stockTable viene vacío: tratá el inventario como desconocido; no inventes filas ni "
+            "cantidades. Preferí ask_clarification o suggest_alternative."
+        )
+    else:
+        stock_hint = (
+            f"stockTable trae {len(rows)} fila(s). Interpretá cada fila usando **solo** las claves y "
+            "valores que aparecen en el JSON (es el mismo esquema que Waseller usa en su tabla). "
+            "No agregues productos, precios ni stock que no surjan de esas filas o del texto ya "
+            "presente en baseline/interpretation. Si incomingText no matchea ninguna fila, no inventes: "
+            "pedí datos o ofrecé alternativas alineadas a filas existentes."
+        )
+    profile = (
+        f" Perfil comercial (businessProfileSlug): {body.businessProfileSlug}."
+        if body.businessProfileSlug
+        else ""
+    )
+    overlay = _load_tenant_prompt_overlay(body.businessProfileSlug)
+    return (
+        "\n## Rol, tenant e inventario\n"
+        f"- Actuás como **asistente de ventas del negocio** identificado por tenantId={body.tenantId} "
+        f"en el JSON de contexto.{profile} Tu objetivo es ayudar a cerrar la venta con tono profesional "
+        "y claro.\n"
+        f"- {stock_hint}\n"
+        "- Usá incomingText como mensaje actual del lead y recentMessages (si hay) como contexto "
+        "reciente; no ignores contradicciones entre mensajes.\n"
+        "- nextAction / recommendedAction deben seguir el vocabulario Waseller ya indicado abajo.\n"
+        f"{overlay}"
+    )
 
 
 def _use_crew_stub() -> bool:
@@ -112,23 +180,26 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
     context_str = json.dumps(context, ensure_ascii=False, indent=2)
     verbose = os.environ.get("CREWAI_VERBOSE", "").lower() in ("1", "true", "yes")
 
+    mission = _sales_and_stock_rules(body)
     redactor = Agent(
         role="Redactor de respuesta shadow Waseller",
         goal=(
-            "Proponer una decision candidata(solo telemetria) alineada al baseline, "
-            "sin inventar stock/precio que contradigan el baseline."
+            "Proponer una decision candidata (solo telemetría) alineada al baseline y al tenant, "
+            "sin inventar catálogo: stock y precios concretos solo si vienen en stockTable o ya "
+            "están de forma inequívoca en baseline/interpretation."
         ),
         backstory=(
-            "Sos el primer paso de un crew de comparacón shadow, tu salida la revisa otro agente."
+            "Sos el primer paso de un crew de comparación shadow; representás al negocio del tenant "
+            "y respetás el inventario enviado en el payload. Tu salida la revisa otro agente."
         ),
         verbose=verbose,
         allow_delegation=False,
     )
 
-
     tarea_redactor = Task(
         description=(
             "Contexto Waseller (JSON):\n\n{context}\n\n"
+            f"{mission}\n"
             "Devolvé SOLO un objeto JSON (sin markdown) con esta forma exacta:\n"
             "{\n"
             '  "candidateDecision": {\n'
@@ -182,6 +253,8 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
             "Devolvé SOLO ese objeto final, sin markdown.\n"
             "Reglas: candidateDecision.nextAction y recommendedAction null o uno de "
             f"{NEXT_ACTION_ENUM_DOC}.\n"
+            "No contradigas stockTable del contexto: precios/disponibilidad concretos solo si "
+            "salen de esas filas o del baseline sin inventar filas nuevas.\n"
             "Si candidateInterpretation existe y trae nextAction, mismo conjunto.\n"
             "Si trae source, solo "
             f"{INTERPRETATION_SOURCE_ENUM_DOC}.\n"

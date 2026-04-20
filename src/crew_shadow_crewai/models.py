@@ -1,4 +1,5 @@
-from typing import Literal
+import re
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -43,6 +44,14 @@ class ShadowCompareRequest(BaseModel):
         default=None,
         description="Ventana corta; tope 8 ítems (se trunca si viniera más).",
     )
+    businessProfileSlug: str | None = Field(
+        default=None,
+        description="Slug de rubro/perfil; prompts extra opcionales vía CREW_TENANT_PROMPTS_DIR.",
+    )
+    stockTable: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="Filas de inventario (mismas columnas que envía Waseller); no inventar fuera de esto.",
+    )
 
     @field_validator("recentMessages", mode="before")
     @classmethod
@@ -52,6 +61,27 @@ class ShadowCompareRequest(BaseModel):
         if isinstance(v, list) and len(v) > 8:
             return v[:8]
         return v
+
+    @field_validator("stockTable", mode="before")
+    @classmethod
+    def cap_stock_rows(cls, v: object) -> object:
+        if v is None:
+            return None
+        if isinstance(v, list) and len(v) > 500:
+            return v[:500]
+        return v
+
+    @field_validator("businessProfileSlug", mode="after")
+    @classmethod
+    def normalize_business_slug(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s:
+            return None
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}", s):
+            raise ValueError("businessProfileSlug inválido (solo letras, números, . _ -)")
+        return s
 
 
 class CandidateDecision(BaseModel):

@@ -141,6 +141,40 @@ def test_shadow_compare_bearer_required(monkeypatch: pytest.MonkeyPatch, client:
     assert r3.status_code == 200
 
 
+def test_v1_shadow_compare_alias_matches_shadow_compare(client: TestClient) -> None:
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "request.example.json"
+    body = json.loads(fixture.read_text(encoding="utf-8"))
+    r1 = client.post("/shadow-compare", json=body)
+    r2 = client.post("/v1/shadow-compare", json=body)
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert r1.json() == r2.json()
+
+
+def test_shadow_compare_invalid_business_profile_slug(client: TestClient) -> None:
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "request.example.json"
+    body = json.loads(fixture.read_text(encoding="utf-8"))
+    body["businessProfileSlug"] = "no/valido"
+    r = client.post("/shadow-compare", json=body)
+    assert r.status_code == 422
+
+
+def test_stock_table_row_cap() -> None:
+    from crew_shadow_crewai.models import ShadowCompareRequest
+
+    rows = [{"sku": str(i)} for i in range(505)]
+    m = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="hola",
+        interpretation={},
+        baselineDecision={},
+        stockTable=rows,
+    )
+    assert len(m.stockTable or []) == 500
+
+
 def test_shadow_compare_unsupported_kind(client: TestClient) -> None:
     r = client.post(
         "/shadow-compare",

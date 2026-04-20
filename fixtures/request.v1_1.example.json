@@ -12,6 +12,18 @@
     { "direction": "outgoing", "message": "Hola, ¿en qué te ayudo?" },
     { "direction": "incoming", "message": "Cuánto sale la remera negra talle M?" }
   ],
+  "businessProfileSlug": "indumentaria-demo",
+  "stockTable": [
+    {
+      "sku": "REM-N-M",
+      "nombre": "Remera negra",
+      "talle": "M",
+      "color": "negro",
+      "precio": 15000,
+      "moneda": "ARS",
+      "stock": 12
+    }
+  ],
   "interpretation": {
     "intent": "consultar_precio",
     "confidence": 0.88,

@@ -12,6 +12,11 @@ router = APIRouter()
     response_model=ShadowCompareResponse,
     dependencies=[Depends(check_shadow_compare_bearer)],
 )
+@router.post(
+    "/v1/shadow-compare",
+    response_model=ShadowCompareResponse,
+    dependencies=[Depends(check_shadow_compare_bearer)],
+)
 def shadow_compare(body: ShadowCompareRequest) -> ShadowCompareResponse:
     if body.kind != "waseller.shadow_compare.v1":
         raise HTTPException(status_code=400, detail="unsupported kind")

@@ -13,6 +13,10 @@
 | `messageId` | `string` | UUID del `Message`. |
 | `conversationId` | `string \| null` | UUID de conversación. |
 | `recentMessages` | `array` | `{ "direction": "incoming" \| "outgoing", "message": "string" }[]`, tope **8** (se trunca si hay más). |
+| `businessProfileSlug` | `string` | Opcional. `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`. Si existe `tenant_prompts/<slug>.txt` (o `CREW_TENANT_PROMPTS_DIR`), el crew inyecta ese texto al prompt. |
+| `stockTable` | `array` de objetos | Opcional. Filas de inventario **tal cual** las serializa Waseller (mismas claves que la tabla interna). Tope **500** filas. El crew debe usar solo esas filas para afirmar producto/precio/stock; no inventar catálogo. |
+
+**Endpoint versionado (alias):** mismo handler que `POST /shadow-compare` → `POST /v1/shadow-compare` (`kind` y `schemaVersion` sin cambio hasta v2).
 
 ## Auth (waseller-crew)
 
