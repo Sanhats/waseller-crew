@@ -175,6 +175,48 @@ def test_stock_table_row_cap() -> None:
     assert len(m.stockTable or []) == 500
 
 
+def test_shadow_compare_accepts_unknown_fields_extra_ignore(client: TestClient) -> None:
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "request.example.json"
+    body = json.loads(fixture.read_text(encoding="utf-8"))
+    body["futureWasellerField"] = {"x": 1}
+    body["anotherUnknown"] = True
+    r = client.post("/shadow-compare", json=body)
+    assert r.status_code == 200
+
+
+def test_shadow_compare_inventory_narrowing_note(client: TestClient) -> None:
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "request.example.json"
+    body = json.loads(fixture.read_text(encoding="utf-8"))
+    body["inventoryNarrowingNote"] = "solo variantes activas"
+    r = client.post("/shadow-compare", json=body)
+    assert r.status_code == 200
+
+
+def test_enrich_empty_draft_reply_from_baseline() -> None:
+    from crew_shadow_crewai.crew_app import _enrich_empty_draft_reply
+    from crew_shadow_crewai.models import CandidateDecision, ShadowCompareRequest, ShadowCompareResponse
+
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="hola",
+        interpretation={},
+        baselineDecision={"draftReply": "Texto baseline"},
+    )
+    resp = ShadowCompareResponse(
+        candidateDecision=CandidateDecision(
+            draftReply="   ",
+            nextAction="reply_only",
+            recommendedAction="reply_only",
+        )
+    )
+    out = _enrich_empty_draft_reply(resp, body)
+    assert out.candidateDecision is not None
+    assert out.candidateDecision.draftReply == "Texto baseline"
+
+
 def test_shadow_compare_unsupported_kind(client: TestClient) -> None:
     r = client.post(
         "/shadow-compare",

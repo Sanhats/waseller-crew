@@ -28,6 +28,8 @@ class RecentMessageItem(BaseModel):
 class ShadowCompareRequest(BaseModel):
     """Request Waseller → shadow-compare. v1 núcleo + v1.1 opcional (mismos schemaVersion/kind)."""
 
+    model_config = ConfigDict(extra="ignore")
+
     schemaVersion: int = Field(..., ge=1, le=1)
     kind: str
     tenantId: str
@@ -51,6 +53,10 @@ class ShadowCompareRequest(BaseModel):
     stockTable: list[dict[str, Any]] | None = Field(
         default=None,
         description="Filas de inventario (mismas columnas que envía Waseller); no inventar fuera de esto.",
+    )
+    inventoryNarrowingNote: str | None = Field(
+        default=None,
+        description="Nota opcional de Waseller sobre cómo se acotó el inventario para este request.",
     )
 
     @field_validator("recentMessages", mode="before")

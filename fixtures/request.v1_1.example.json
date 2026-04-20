@@ -13,6 +13,7 @@
     { "direction": "incoming", "message": "Cuánto sale la remera negra talle M?" }
   ],
   "businessProfileSlug": "indumentaria_calzado",
+  "inventoryNarrowingNote": "Variantes activas con stock > 0 (ejemplo)",
   "stockTable": [
     {
       "variantId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",

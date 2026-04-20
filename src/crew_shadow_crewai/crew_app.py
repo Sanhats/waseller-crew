@@ -32,6 +32,7 @@ from crew_shadow_crewai.models import (
     ShadowCompareRequest,
     ShadowCompareResponse,
 )
+from crew_shadow_crewai.observability import structured_log_line
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +91,13 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         else ""
     )
     overlay = _load_tenant_prompt_overlay(body.businessProfileSlug)
+    narrow = (body.inventoryNarrowingNote or "").strip()
+    narrow_block = ""
+    if narrow:
+        narrow_block = (
+            f"\n- **Nota de acotación de inventario (Waseller):** {narrow[:4000]}\n"
+            "  Usala junto con stockTable; no la contradigas salvo que sea incoherente con las filas.\n"
+        )
     return (
         "\n## Rol, tenant e inventario\n"
         f"- Actuás como **asistente de ventas del negocio** identificado por tenantId={body.tenantId} "
@@ -106,6 +114,7 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         "- **Anti-repetición:** No repitas un bloque comercial idéntico al mensaje saliente previo en "
         "recentMessages si incomingText pide información nueva; reformulá según la pregunta actual "
         "y baseline/interpretation solo como apoyo.\n"
+        f"{narrow_block}"
         "- nextAction / recommendedAction deben seguir el vocabulario Waseller ya indicado abajo.\n"
         f"{overlay}"
     )
@@ -153,6 +162,40 @@ def _json_from_crew_output(text: str) -> dict[str, Any]:
     if start == -1 or end <= start:
         raise ValueError("No se encontró un objeto JSON en la salida del crew")
     return json.loads(s[start : end + 1])
+
+
+def _enrich_empty_draft_reply(resp: ShadowCompareResponse, body: ShadowCompareRequest) -> ShadowCompareResponse:
+    """
+    Modo primary-friendly: Waseller espera candidateDecision.draftReply no vacío cuando hay baseline.
+    Si el LLM dejó draft vacío, completamos desde baseline (telemetría sigue siendo útil en diff).
+    """
+    cd = resp.candidateDecision
+    if cd is None:
+        return resp
+    if (cd.draftReply or "").strip():
+        return resp
+    bl = body.baselineDecision if isinstance(body.baselineDecision, dict) else {}
+    fallback = str(bl.get("draftReply") or "").strip()
+    if not fallback:
+        log.warning(
+            structured_log_line(
+                "shadow_compare_empty_draft_no_fallback",
+                tenant_id=body.tenantId,
+                lead_id=body.leadId,
+            )
+        )
+        return resp
+    log.warning(
+        structured_log_line(
+            "shadow_compare_empty_draft_filled_from_baseline",
+            tenant_id=body.tenantId,
+            lead_id=body.leadId,
+        )
+    )
+    return ShadowCompareResponse(
+        candidateDecision=cd.model_copy(update={"draftReply": fallback[:2000]}),
+        candidateInterpretation=resp.candidateInterpretation,
+    )
 
 
 def _shadow_response_from_crew_dict(data: dict[str, Any]) -> ShadowCompareResponse:
@@ -228,6 +271,9 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
             "    }\n"
             "}\n"
             "Todas las claves internas de candidateDecision son opcionales salvo las que puedas inferir.\n"
+            "candidateDecision.draftReply: string **no vacío** siempre que puedas proponer texto al lead; "
+            "no devuelvas \"\" ni null si hay baselineDecision.draftReply o datos en stockTable para armar "
+            "una respuesta coherente (Waseller modo primary).\n"
             "candidateInterpretation: resumí la lectura del mensaje respecto al contexto; "
             "si no aporta valor, usá null.\n"
             f"nextAction / recommendedAction (en candidateDecision): uno de {NEXT_ACTION_ENUM_DOC}.\n"
@@ -266,6 +312,7 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
             "Si incomingText es aclaración (otro color, más stock, etc.), draftReply debe "
             "responder eso; si el redactor repite el párrafo anterior sin aportar, reescribí mínimo "
             "coherente con stockTable/recentMessages.\n"
+            "draftReply no debe quedar vacío si el contexto permite al menos un borrador útil.\n"
             "Si candidateInterpretation existe y trae nextAction, mismo conjunto.\n"
             "Si trae source, solo "
             f"{INTERPRETATION_SOURCE_ENUM_DOC}.\n"
@@ -296,7 +343,16 @@ def run_crew(body: ShadowCompareRequest) -> ShadowCompareResponse:
         log.warning("OPENAI_API_KEY ausente: usando stub")
         return _stub_response(body)
     try:
-        return _crew_llm_response(body)
-    except Exception:
-        log.exception("Fallo CrewAI; degradando a stub")
+        resp = _crew_llm_response(body)
+        return _enrich_empty_draft_reply(resp, body)
+    except Exception as e:
+        log.error(
+            structured_log_line(
+                "crew_failure",
+                tenant_id=body.tenantId,
+                lead_id=body.leadId,
+                error_type=type(e).__name__,
+            ),
+            exc_info=True,
+        )
         return _stub_response(body)

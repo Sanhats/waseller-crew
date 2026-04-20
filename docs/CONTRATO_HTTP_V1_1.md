@@ -19,8 +19,13 @@ Alineados al documento Waseller (mismos nombres y semántica).
 | `recentMessages` | `array` | `{ "direction": "incoming" \| "outgoing", "message": "string" }[]`. En crew: tope **8** (truncado si hay más). |
 | `businessProfileSlug` | `string` | Opcional. Patrón `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$` (ej. `indumentaria_calzado`). Overlay de prompts: `tenant_prompts/<slug>.txt` o directorio `CREW_TENANT_PROMPTS_DIR`. |
 | `stockTable` | `array` | Opcional. Filas alineadas a **`GET /products`** (una variante por fila). Propiedades típicas: `variantId`, `productId`, `name`, `sku`, `attributes`, `stock`, `reservedStock`, `availableStock`, `effectivePrice`, `imageUrl`, `isActive`, `tags`, `basePrice`, `variantPrice`. **Tope 500** filas por request (validado en crew). |
+| `inventoryNarrowingNote` | `string` | Opcional. Texto de Waseller sobre cómo se acotó el inventario; se inyecta al prompt del crew. |
 
-**Endpoints:** `POST /shadow-compare` y alias **`POST /v1/shadow-compare`** (mismo handler, misma auth).
+**Endpoints:** `POST /shadow-compare` y alias **`POST /v1/shadow-compare`** (mismo handler, misma validación Pydantic y misma auth).
+
+**Campos futuros en el body:** `ShadowCompareRequest` usa `extra = "ignore"`: claves nuevas que aún no estén en el modelo no rompen el POST (se descartan del modelo interno).
+
+**Respuesta (modo primary / parseo Waseller):** `candidateDecision` con `draftReply` **string no vacío** cuando el baseline trae borrador: si el LLM devuelve `draftReply` vacío, el servicio **rellena desde** `baselineDecision.draftReply` y deja traza `shadow_compare_empty_draft_filled_from_baseline` en logs. `nextAction` / `recommendedAction` siguen el enum Waseller (coerción a `null` si viene inválido).
 
 ---
 
@@ -53,6 +58,20 @@ Implementación: dependencia FastAPI en la ruta POST (`auth.py` — no middlewar
 ## 4.1 Comandos contra producción
 
 Definí `CREW_BASE_URL` (HTTPS, sin `/` final) y, si aplica, `SHADOW_COMPARE_SECRET`. Ver **`IMPLEMENTACION_MINIMA.md`** y **`scripts/smoke-prod.sh`** en la raíz del repo.
+
+---
+
+## 4.2 Observabilidad (logs estructurados)
+
+Cada request exitosa al POST emite una línea JSON con `event: shadow_compare_completed` (`tenant_id`, `lead_id`, `correlation_id` si viene, `http_status`, `latency_ms`, `stock_table_rows`, `has_business_profile_slug`).
+
+- `shadow_compare_reject_kind`: `kind` inválido (HTTP 400).
+- `crew_failure`: error CrewAI / parseo JSON (`error_type`); luego se degrada a stub.
+- `shadow_compare_empty_draft_filled_from_baseline` / `shadow_compare_empty_draft_no_fallback`: ajuste de `draftReply` vacío.
+
+**Health:** `GET /health` → `{"ok": true}` (Railway / probes).
+
+**Timeouts:** el cliente Waseller usa `LLM_SHADOW_COMPARE_TIMEOUT_MS`; con `stockTable` grande y LLM lento, subir ese valor en workers (ver §3).
 
 ---
 
