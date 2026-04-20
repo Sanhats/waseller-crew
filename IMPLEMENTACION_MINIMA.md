@@ -93,32 +93,75 @@ def run_crew(body: ShadowCompareRequest) -> ShadowCompareResponse:
     )
 ```
 
-## Probar con curl
+## Probar contra **producción** (Railway / HTTPS)
 
-Desde la raíz del repo Python, con el servidor en `localhost:8080`:
+En el **servicio** crew (Railway): `USE_CREW_STUB` vacío o `false`, `OPENAI_API_KEY` definida para LLM real, `SHADOW_COMPARE_SECRET` alineado con workers y `SHADOW_COMPARE_REQUIRE_AUTH=true` si el endpoint es público.
+
+En tu máquina, **desde la raíz de este repo**, exportá la URL pública (sin barra final) y el secret (mismo valor que `LLM_SHADOW_COMPARE_SECRET` en Waseller si usan Bearer):
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/shadow-compare \
+export CREW_BASE_URL="https://tu-servicio.up.railway.app"
+export SHADOW_COMPARE_SECRET="el-mismo-secreto-que-workers"
+```
+
+Health:
+
+```bash
+curl -sS "${CREW_BASE_URL}/health"
+```
+
+Shadow compare (contrato v1.1 + `stockTable`; path versionado recomendado):
+
+```bash
+curl -sS -w "\nHTTP %{http_code}\n" \
+  "${CREW_BASE_URL}/v1/shadow-compare" \
   -H "Content-Type: application/json" \
-  -d @fixtures/request.example.json
+  -H "Authorization: Bearer ${SHADOW_COMPARE_SECRET}" \
+  -d @fixtures/request.v1_1.example.json
 ```
 
-Respuesta esperada (ejemplo):
+Si en tu deploy **no** exigís auth (`SHADOW_COMPARE_REQUIRE_AUTH` no es `true`), omití la línea `Authorization`.
 
-```json
-{
-  "candidateDecision": {
-    "draftReply": "[crew-stub] …",
-    "intent": "consultar_precio",
-    "nextAction": "reply_only",
-    "recommendedAction": "reply_only",
-    "confidence": 0.72,
-    "reason": "stub"
-  },
-  "candidateInterpretation": null
-}
+**Script** (mismo flujo):
+
+```bash
+chmod +x scripts/smoke-prod.sh   # una vez
+./scripts/smoke-prod.sh
+# otro fixture: ./scripts/smoke-prod.sh fixtures/request.example.json
+# path legacy: CREW_SHADOW_PATH=/shadow-compare ./scripts/smoke-prod.sh
 ```
 
-## Comando Waseller
+**Windows PowerShell** (equivalente; usá `curl.exe` para no chocar con el alias de PowerShell):
 
-En workers: `LLM_SHADOW_COMPARE_URL=http://127.0.0.1:8080/shadow-compare` (solo en red que llegue al contenedor; en la nube usá URL pública).
+```powershell
+$env:CREW_BASE_URL = "https://tu-servicio.up.railway.app"
+$env:SHADOW_COMPARE_SECRET = "tu-secreto"
+curl.exe -sS "$env:CREW_BASE_URL/health"
+curl.exe -sS -w "`nHTTP %{http_code}`n" `
+  "$env:CREW_BASE_URL/v1/shadow-compare" `
+  -H "Content-Type: application/json" `
+  -H "Authorization: Bearer $env:SHADOW_COMPARE_SECRET" `
+  -d "@fixtures/request.v1_1.example.json"
+```
+
+## Probar en local (solo desarrollo)
+
+Servidor en `127.0.0.1:8080` con stub (no llama a OpenAI):
+
+```bash
+USE_CREW_STUB=1 uv run uvicorn crew_shadow_crewai.main:app --host 127.0.0.1 --port 8080
+```
+
+Otra terminal:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/v1/shadow-compare \
+  -H "Content-Type: application/json" \
+  -d @fixtures/request.v1_1.example.json
+```
+
+Con stub, la respuesta incluye `[crew-stub]` en `draftReply`. Sin stub y con `OPENAI_API_KEY`, el texto lo genera el crew.
+
+## Comando Waseller (workers)
+
+`LLM_SHADOW_COMPARE_URL` debe ser la URL **HTTPS** pública del crew, por ejemplo `https://tu-servicio.up.railway.app/v1/shadow-compare` (o `/shadow-compare`). Tiene que ser alcanzable desde los workers de Railway.

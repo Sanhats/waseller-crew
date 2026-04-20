@@ -50,6 +50,10 @@ Implementación: dependencia FastAPI en la ruta POST (`auth.py` — no middlewar
 - `fixtures/request.example.json` — solo v1.
 - `fixtures/request.v1_1.example.json` — v1 + opcionales; `stockTable` en forma **canónica Waseller** (shape `GET /products`).
 
+## 4.1 Comandos contra producción
+
+Definí `CREW_BASE_URL` (HTTPS, sin `/` final) y, si aplica, `SHADOW_COMPARE_SECRET`. Ver **`IMPLEMENTACION_MINIMA.md`** y **`scripts/smoke-prod.sh`** en la raíz del repo.
+
 ---
 
 ## 5. Checklist coordinado

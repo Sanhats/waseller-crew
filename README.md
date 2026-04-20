@@ -10,7 +10,8 @@ Esta carpeta en Waseller contiene todo el paquete para el **otro repo**:
 | [`fixtures/request.example.json`](./fixtures/request.example.json) | Body de ejemplo idéntico al que envía Waseller. |
 | [`fixtures/request.v1_1.example.json`](./fixtures/request.v1_1.example.json) | Body v1 + campos opcionales y `recentMessages` (contrato v1.1). |
 | [`docs/CONTRATO_HTTP_V1_1.md`](./docs/CONTRATO_HTTP_V1_1.md) | Resumen crew + checklist; **canon** en Waseller: `docs/integrations/waseller-crew/CONTRATO_V1_1.md`. |
-| [`IMPLEMENTACION_MINIMA.md`](./IMPLEMENTACION_MINIMA.md) | Esqueleto FastAPI + stub `run_crew()` y `curl` de prueba. |
+| [`IMPLEMENTACION_MINIMA.md`](./IMPLEMENTACION_MINIMA.md) | Esqueleto + **`curl` producción** (`CREW_BASE_URL` + Bearer) y local stub. |
+| [`scripts/smoke-prod.sh`](./scripts/smoke-prod.sh) | Smoke HTTPS contra el deploy (health + POST v1.1). |
 
 Podés copiar **toda la carpeta** `docs/integrations/waseller-crew/` al nuevo repositorio (como `docs/` o raíz del proyecto Python).
 
@@ -189,7 +190,7 @@ Arranque local:
 uv run uvicorn crew_shadow_crewai.main:app --host 0.0.0.0 --port 8080
 ```
 
-Probar con `curl` usando un JSON de ejemplo guardado en `fixtures/request.json`.
+**Probar el deploy en producción:** definí `CREW_BASE_URL` y `SHADOW_COMPARE_SECRET` en el shell y usá el script o los `curl` de [`IMPLEMENTACION_MINIMA.md`](./IMPLEMENTACION_MINIMA.md). Fixture recomendado: `fixtures/request.v1_1.example.json`.
 
 ---
 
