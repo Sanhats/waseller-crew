@@ -12,16 +12,23 @@
     { "direction": "outgoing", "message": "Hola, ¿en qué te ayudo?" },
     { "direction": "incoming", "message": "Cuánto sale la remera negra talle M?" }
   ],
-  "businessProfileSlug": "indumentaria-demo",
+  "businessProfileSlug": "indumentaria_calzado",
   "stockTable": [
     {
-      "sku": "REM-N-M",
-      "nombre": "Remera negra",
-      "talle": "M",
-      "color": "negro",
-      "precio": 15000,
-      "moneda": "ARS",
-      "stock": 12
+      "variantId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "productId": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+      "name": "Remera básica",
+      "sku": "REM-BLK-M",
+      "attributes": { "talle": "M", "color": "negro" },
+      "stock": 4,
+      "reservedStock": 0,
+      "availableStock": 4,
+      "effectivePrice": 12990,
+      "imageUrl": null,
+      "isActive": true,
+      "tags": [],
+      "basePrice": 12990,
+      "variantPrice": null
     }
   ],
   "interpretation": {
@@ -45,7 +52,7 @@
     "reason": "baseline_waseller",
     "requiresHuman": false,
     "recommendedAction": "reply_only",
-    "draftReply": "La remera negra talle M sale $15000. ¿Te reservo una?",
+    "draftReply": "La remera negra talle M sale $12990. ¿Te reservo una?",
     "handoffRequired": false,
     "qualityFlags": [],
     "source": "llm",

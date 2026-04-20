@@ -9,7 +9,7 @@ Esta carpeta en Waseller contiene todo el paquete para el **otro repo**:
 | [`.env.example`](./.env.example) | Variables del servicio Python. |
 | [`fixtures/request.example.json`](./fixtures/request.example.json) | Body de ejemplo idéntico al que envía Waseller. |
 | [`fixtures/request.v1_1.example.json`](./fixtures/request.v1_1.example.json) | Body v1 + campos opcionales y `recentMessages` (contrato v1.1). |
-| [`docs/CONTRATO_HTTP_V1_1.md`](./docs/CONTRATO_HTTP_V1_1.md) | Contrato v1.1 coordinado (opcionales + Bearer); checklist Waseller ↔ crew. |
+| [`docs/CONTRATO_HTTP_V1_1.md`](./docs/CONTRATO_HTTP_V1_1.md) | Resumen crew + checklist; **canon** en Waseller: `docs/integrations/waseller-crew/CONTRATO_V1_1.md`. |
 | [`IMPLEMENTACION_MINIMA.md`](./IMPLEMENTACION_MINIMA.md) | Esqueleto FastAPI + stub `run_crew()` y `curl` de prueba. |
 
 Podés copiar **toda la carpeta** `docs/integrations/waseller-crew/` al nuevo repositorio (como `docs/` o raíz del proyecto Python).
@@ -34,7 +34,7 @@ Referencia en Waseller:
 | **uv** | Instalación: [documentación oficial de uv](https://docs.astral.sh/uv/getting-started/installation/). En Windows: instalador o `pip install uv`. |
 | **API de LLM** | `OPENAI_API_KEY` u otro proveedor compatible con lo que use CrewAI en tu proyecto. |
 | **Red** | URL pública HTTPS (Railway, Fly.io, Cloud Run, etc.) accesible **desde los workers** de Waseller. |
-| **Seguridad** | Recomendado: token compartido (`SHADOW_SERVICE_SECRET`) validado en header `Authorization: Bearer …` (Waseller hoy **no** envía el header; podés añadirlo después en el worker o usar un reverse proxy con auth). |
+| **Seguridad** | `SHADOW_COMPARE_SECRET` + `SHADOW_COMPARE_REQUIRE_AUTH` (ver `docs/CONTRATO_HTTP_V1_1.md`). Waseller envía `Authorization: Bearer` si `LLM_SHADOW_COMPARE_SECRET` está definido. |
 
 ---
 
@@ -44,21 +44,23 @@ Referencia en Waseller:
 
 - **POST** a la URL exacta configurada en `LLM_SHADOW_COMPARE_URL` (puede ser `https://host/shadow-compare` o la raíz si así lo configurás).
 - **Content-Type:** `application/json`
-- **Timeout del cliente Waseller:** `LLM_SHADOW_COMPARE_TIMEOUT_MS` (default **8000** ms, máximo 120000). Tu servicio debe responder por debajo de ese valor o Waseller abortará la petición (la traza guardará error de red/abort).
+- **Timeout del cliente Waseller:** `LLM_SHADOW_COMPARE_TIMEOUT_MS` (default **8000** ms, máximo 120000). Tu servicio debe responder por debajo de ese valor o Waseller abortará la petición. Con **`stockTable` grande** + CrewAI, subí el timeout en workers o el cliente cortará antes de que termine el LLM (ver `docs/CONTRATO_HTTP_V1_1.md`).
 
 ### Cuerpo JSON (request)
 
-Waseller envía **solo** estos campos (sin `phone`, `correlationId` ni `messageId` en el body actual; si los necesitás, pedís extender el worker o inferís por `leadId`/`tenantId`):
+**Núcleo v1 (siempre):** `schemaVersion`, `kind`, `tenantId`, `leadId`, `incomingText`, `interpretation`, `baselineDecision`.
+
+**v1.1 (opcional, ya enviados por Waseller en prod/staging cuando aplica):** `phone`, `correlationId`, `messageId`, `conversationId`, `recentMessages`, `stockTable` (filas tipo `GET /products`, ≤500), `businessProfileSlug` (rubro seguro). Detalle y auth: [`docs/CONTRATO_HTTP_V1_1.md`](./docs/CONTRATO_HTTP_V1_1.md) y contrato canónico en el repo Waseller.
 
 | Campo | Tipo | Descripción |
 |--------|------|-------------|
-| `schemaVersion` | `number` | Hoy siempre **1** (constante `JOB_SCHEMA_VERSION` en Waseller). |
-| `kind` | `string` | Siempre **`waseller.shadow_compare.v1`**. |
+| `schemaVersion` | `number` | Hoy siempre **1**. |
+| `kind` | `string` | **`waseller.shadow_compare.v1`**. |
 | `tenantId` | `string` | UUID del tenant. |
 | `leadId` | `string` | UUID del lead. |
 | `incomingText` | `string` | Último mensaje del cliente en claro. |
-| `interpretation` | `object` | Objeto alineado con **`ConversationInterpretationV1`** (ver abajo). |
-| `baselineDecision` | `object` | Objeto alineado con **`LlmDecisionV1`** (ver abajo): decisión **ya** pasada por guardrails/política en Waseller. |
+| `interpretation` | `object` | **`ConversationInterpretationV1`** (resumen abajo). |
+| `baselineDecision` | `object` | **`LlmDecisionV1`** (resumen abajo). |
 
 #### `ConversationInterpretationV1` (resumen)
 
@@ -197,7 +199,9 @@ Probar con `curl` usando un JSON de ejemplo guardado en `fixtures/request.json`.
 |----------|-------------|-------------|
 | `OPENAI_API_KEY` | Sí (si usás OpenAI con Crew) | Clave del proveedor LLM. |
 | `PORT` | No | Puerto del servidor (p. ej. 8080). Plataformas suelen inyectar `PORT`. |
-| `SHADOW_SERVICE_SECRET` | Recomendada | Si implementás auth, validá `Authorization: Bearer <token>`. |
+| `SHADOW_COMPARE_SECRET` | Recomendada (prod) | Igual que `LLM_SHADOW_COMPARE_SECRET` en workers. |
+| `SHADOW_COMPARE_REQUIRE_AUTH` | Opcional | `true` en prod si el endpoint es público. |
+| `CREW_TENANT_PROMPTS_DIR` | Opcional | Overlay `tenant_prompts/<businessProfileSlug>.txt`. |
 | `LOG_LEVEL` | No | `INFO`, `DEBUG`, etc. |
 
 En **Waseller (workers)** ya existen:
@@ -209,11 +213,11 @@ En **Waseller (workers)** ya existen:
 
 ## CrewAI: enfoque mínimo
 
-1. **Un agente “redactor”** que reciba en contexto: `incomingText`, `interpretation`, `baselineDecision` y genere un JSON con `draftReply`, `intent`, `nextAction`, `recommendedAction`, `confidence`, `reason`.  
+1. **Un agente “redactor”** que reciba en contexto el JSON completo del POST (incl. `recentMessages`, `stockTable`, `businessProfileSlug` si vienen) y genere `candidateDecision` / `candidateInterpretation`.  
 2. **Opcional: agente “crítico”** que revise el JSON y lo ajuste (proceso secuencial CrewAI).  
 3. **Salida:** serializar **solo** el objeto que cumple el contrato de respuesta (mejor con Pydantic `model_dump()` para tipos correctos).
 
-No intentes llamar a Prisma ni a Redis desde este servicio en la fase shadow: el contrato es **stateless** salvo lo que vos agregues (cache, logs, etc.).
+El contrato con Waseller es **stateless**: inventario y rubro llegan en el body; prompts por tenant pueden vivir en archivos (`tenant_prompts/`) en el deploy del crew.
 
 ---
 
@@ -237,6 +241,4 @@ No intentes llamar a Prisma ni a Redis desde este servicio en la fase shadow: el
 
 ## Extensión futura (opcional)
 
-- Que Waseller envíe `Authorization` con un secret (cambio pequeño en `shadow-compare.service.ts`).  
-- Añadir al body `phone`, `correlationId`, `messageId` para correlación en vuestros logs (requiere PR en Waseller).  
-- Segunda fase: sustituir el pipeline interno por la respuesta del crew **solo** tras verificación humana o métricas — eso ya es diseño de producto, no solo shadow.
+- Segunda fase: sustituir el pipeline interno por la respuesta del crew **solo** tras verificación humana o métricas — diseño de producto, no solo shadow.

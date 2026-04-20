@@ -1,0 +1,1 @@
+Priorizá indumentaria y calzado. Mapeá consultas de talle/color a `attributes` de cada fila en stockTable. No inventes precios: usá effectivePrice / basePrice / variantPrice según lo que venga en cada fila.

@@ -1,1 +1,0 @@
-Priorizá indumentaria básica. Si preguntan por talles, mapeá a las columnas talle/color de stockTable. No ofrezas envío internacional salvo que el baseline lo mencione.
