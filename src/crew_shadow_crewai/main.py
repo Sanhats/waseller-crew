@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import urllib.error
@@ -45,12 +46,18 @@ def _probe_openai_key_http_status(key: str) -> int:
 _key = os.environ.get("OPENAI_API_KEY") or ""
 _stub = os.environ.get("USE_CREW_STUB", "").strip().lower() in ("1", "true", "yes")
 _model = (os.environ.get("OPENAI_MODEL_NAME") or "gpt-4o-mini").strip()
+_key_fp = (
+    hashlib.sha256(_key.encode("utf-8")).hexdigest()[:12]
+    if _key
+    else None
+)
 log.info(
     structured_log_line(
         "startup_env",
         openai_key_configured=bool(_key),
         openai_key_length=len(_key) if _key else 0,
         openai_key_last4=_key[-4:] if len(_key) >= 4 else None,
+        openai_key_fingerprint=_key_fp,
         openai_key_normalized=_key_was_normalized,
         openai_model_name=_model,
         use_crew_stub=_stub,

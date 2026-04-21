@@ -24,6 +24,9 @@ def test_normalize_openai_api_key() -> None:
     k2, c2 = normalize_openai_api_key("sk-abc")
     assert k2 == "sk-abc"
     assert c2 is False
+    k3, c3 = normalize_openai_api_key("sk-te\u200bst")
+    assert k3 == "sk-test"
+    assert c3 is True
 
 
 def test_health(client: TestClient) -> None:
