@@ -26,6 +26,7 @@ from crew_shadow_crewai.constants import (
     INTERPRETATION_SOURCE_ENUM_DOC,
     NEXT_ACTION_ENUM_DOC,
 )
+from crew_shadow_crewai.draft_variant_guard import apply_variant_followup_guard
 from crew_shadow_crewai.models import (
     CandidateDecision,
     CandidateInterpretation,
@@ -360,6 +361,7 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
         tasks=[tarea_redactor, tarea_critico],
         process=Process.sequential,
         verbose=verbose,
+        tracing=False,
     )
     raw = crew.kickoff(inputs={"context": context_str})
     text_out = raw if isinstance(raw, str) else str(raw)
@@ -391,6 +393,7 @@ def run_crew(body: ShadowCompareRequest) -> ShadowCompareResponse:
         return _stub_response(body)
     try:
         resp = _crew_llm_response(body)
+        resp = apply_variant_followup_guard(body, resp)
         return _enrich_empty_draft_reply(resp, body)
     except Exception as e:
         hint = _openai_failure_hint(e)

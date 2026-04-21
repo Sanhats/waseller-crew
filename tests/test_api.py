@@ -251,6 +251,100 @@ def test_enrich_empty_draft_reply_from_baseline() -> None:
     assert out.candidateDecision.draftReply == "Texto baseline"
 
 
+def test_variant_guard_rewrites_duplicate_color_followup() -> None:
+    from crew_shadow_crewai.draft_variant_guard import apply_variant_followup_guard
+    from crew_shadow_crewai.models import (
+        CandidateDecision,
+        RecentMessageItem,
+        ShadowCompareRequest,
+        ShadowCompareResponse,
+    )
+
+    prev = (
+        "Sí, tengo Mesa de algarrobo en talle L, color marron claro y modelo mesa algarrobo. "
+        "Sale $195.000. Tengo 2 unidad(es) disponible(s). ¿Querés que te reserve una?"
+    )
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="tenes otro color?",
+        interpretation={},
+        baselineDecision={"draftReply": prev},
+        recentMessages=[
+            RecentMessageItem(direction="incoming", message="hola, tienen Mesa de algarrobo?"),
+            RecentMessageItem(direction="outgoing", message=prev),
+        ],
+        stockTable=[{"name": "Mesa algarrobo", "color": "marrón claro", "talle": "L"}],
+    )
+    resp = ShadowCompareResponse(candidateDecision=CandidateDecision(draftReply=prev))
+    out = apply_variant_followup_guard(body, resp)
+    assert out.candidateDecision is not None
+    dr = out.candidateDecision.draftReply or ""
+    assert dr != prev
+    assert "color" in dr.lower()
+    assert "figura" in dr.lower() or "solo" in dr.lower()
+    assert "variant_guard" in (out.candidateDecision.reason or "")
+
+
+def test_variant_guard_skips_when_two_colors_in_stock() -> None:
+    from crew_shadow_crewai.draft_variant_guard import apply_variant_followup_guard
+    from crew_shadow_crewai.models import (
+        CandidateDecision,
+        RecentMessageItem,
+        ShadowCompareRequest,
+        ShadowCompareResponse,
+    )
+
+    prev = "Misma ficha repetida."
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="otro color?",
+        interpretation={},
+        baselineDecision={"draftReply": prev},
+        recentMessages=[
+            RecentMessageItem(direction="outgoing", message=prev),
+        ],
+        stockTable=[
+            {"name": "A", "color": "rojo"},
+            {"name": "A", "color": "azul"},
+        ],
+    )
+    resp = ShadowCompareResponse(candidateDecision=CandidateDecision(draftReply=prev))
+    out = apply_variant_followup_guard(body, resp)
+    assert out.candidateDecision is not None
+    assert out.candidateDecision.draftReply == prev
+
+
+def test_variant_guard_uses_baseline_when_no_recent_outgoing() -> None:
+    from crew_shadow_crewai.draft_variant_guard import apply_variant_followup_guard
+    from crew_shadow_crewai.models import CandidateDecision, ShadowCompareRequest, ShadowCompareResponse
+
+    prev = (
+        "Sí, tengo Mesa de algarrobo en talle L, color marron claro. Sale $195.000. "
+        "Tengo 2 unidad(es) disponible(s)."
+    )
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="¿Tenés en otro color?",
+        interpretation={},
+        baselineDecision={"draftReply": prev},
+        recentMessages=None,
+        stockTable=[{"nombre": "Mesa", "Color": "marrón claro"}],
+    )
+    resp = ShadowCompareResponse(candidateDecision=CandidateDecision(draftReply=prev))
+    out = apply_variant_followup_guard(body, resp)
+    assert out.candidateDecision is not None
+    assert out.candidateDecision.draftReply != prev
+
+
 def test_shadow_compare_unsupported_kind(client: TestClient) -> None:
     r = client.post(
         "/shadow-compare",
