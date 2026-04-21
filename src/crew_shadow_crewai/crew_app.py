@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from crewai import Agent, Crew, Process, Task
+from crewai import Agent, Crew, LLM, Process, Task
 
 from crew_shadow_crewai.constants import (
     CONVERSATION_STAGE_ENUM_DOC,
@@ -33,6 +33,7 @@ from crew_shadow_crewai.models import (
     ShadowCompareResponse,
 )
 from crew_shadow_crewai.observability import structured_log_line
+from crew_shadow_crewai.openai_env import normalize_openai_api_key
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +119,27 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         "- nextAction / recommendedAction deben seguir el vocabulario Waseller ya indicado abajo.\n"
         f"{overlay}"
     )
+
+
+def _shadow_crew_llm() -> LLM:
+    """
+    API key explícita (además de os.environ) para evitar desalineación con el provider OpenAI de CrewAI.
+    """
+    raw = os.environ.get("OPENAI_API_KEY")
+    api_key, _ = normalize_openai_api_key(raw)
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
+    model_raw = (os.environ.get("OPENAI_MODEL_NAME") or "gpt-4o-mini").strip()
+    model = model_raw if "/" in model_raw else f"openai/{model_raw}"
+    base = (os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE") or "").strip()
+    params: dict[str, Any] = {
+        "model": model,
+        "api_key": api_key,
+        "temperature": 0.2,
+    }
+    if base:
+        params["base_url"] = base
+    return LLM(**params)
 
 
 def _use_crew_stub() -> bool:
@@ -232,6 +254,7 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
     verbose = os.environ.get("CREWAI_VERBOSE", "").lower() in ("1", "true", "yes")
 
     mission = _sales_and_stock_rules(body)
+    llm = _shadow_crew_llm()
     redactor = Agent(
         role="Redactor de respuesta shadow Waseller",
         goal=(
@@ -245,6 +268,7 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
         ),
         verbose=verbose,
         allow_delegation=False,
+        llm=llm,
     )
 
     tarea_redactor = Task(
@@ -298,6 +322,7 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
         ),
         verbose=verbose,
         allow_delegation=False,
+        llm=llm,
     )
     tarea_critico = Task(
         description=(

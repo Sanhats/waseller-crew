@@ -15,6 +15,17 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+def test_normalize_openai_api_key() -> None:
+    from crew_shadow_crewai.openai_env import normalize_openai_api_key
+
+    k, changed = normalize_openai_api_key('  "sk-test123"\n  ')
+    assert k == "sk-test123"
+    assert changed is True
+    k2, c2 = normalize_openai_api_key("sk-abc")
+    assert k2 == "sk-abc"
+    assert c2 is False
+
+
 def test_health(client: TestClient) -> None:
     r = client.get("/health")
     assert r.status_code == 200
