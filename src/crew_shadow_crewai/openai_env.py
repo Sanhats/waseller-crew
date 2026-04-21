@@ -2,6 +2,26 @@
 
 from __future__ import annotations
 
+import os
+
+
+def pick_raw_openai_api_key_from_environ() -> tuple[str | None, str]:
+    """
+    Elige la clave cruda antes de normalizar.
+
+    CREW_OPENAI_API_KEY tiene prioridad si no está vacía (Railway: variable compartida
+    OPENAI_API_KEY a nivel proyecto a veces pisa la del servicio; podés poner la clave
+    buena solo en waseller-crew como CREW_OPENAI_API_KEY).
+    """
+    crew = os.environ.get("CREW_OPENAI_API_KEY")
+    if crew is not None and crew.strip():
+        return crew, "CREW_OPENAI_API_KEY"
+    oa = os.environ.get("OPENAI_API_KEY")
+    if oa is not None and oa.strip():
+        return oa, "OPENAI_API_KEY"
+    return None, "none"
+
+
 # Pegados desde Slack/Notion/navegador suelen meter estos puntos de código; OpenAI ve otra cadena → 401.
 _INVISIBLE_CODEPOINTS: frozenset[int] = frozenset(
     {
@@ -45,3 +65,10 @@ def normalize_openai_api_key(raw: str | None) -> tuple[str, bool]:
     if s != before_naive:
         changed = True
     return s, changed
+
+
+def effective_normalized_openai_api_key() -> tuple[str, str]:
+    """(clave normalizada, fuente). Vacío si no hay ninguna variable útil."""
+    raw, source = pick_raw_openai_api_key_from_environ()
+    key, _ = normalize_openai_api_key(raw)
+    return key, source

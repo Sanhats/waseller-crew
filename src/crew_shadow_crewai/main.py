@@ -9,7 +9,10 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from crew_shadow_crewai.observability import structured_log_line
-from crew_shadow_crewai.openai_env import normalize_openai_api_key
+from crew_shadow_crewai.openai_env import (
+    normalize_openai_api_key,
+    pick_raw_openai_api_key_from_environ,
+)
 from crew_shadow_crewai.routes import router
 
 _root = Path(__file__).resolve().parents[2]
@@ -17,9 +20,9 @@ load_dotenv(_root / ".env")
 load_dotenv(_root / ".env.local", override=True)
 
 
-_raw_key = os.environ.get("OPENAI_API_KEY")
+_raw_key, _key_env_source = pick_raw_openai_api_key_from_environ()
 _norm_key, _key_was_normalized = normalize_openai_api_key(_raw_key)
-if _raw_key is not None:
+if _key_env_source != "none":
     os.environ["OPENAI_API_KEY"] = _norm_key
 
 logging.basicConfig(
@@ -58,6 +61,7 @@ log.info(
         openai_key_length=len(_key) if _key else 0,
         openai_key_last4=_key[-4:] if len(_key) >= 4 else None,
         openai_key_fingerprint=_key_fp,
+        openai_key_env_source=_key_env_source,
         openai_key_normalized=_key_was_normalized,
         openai_model_name=_model,
         use_crew_stub=_stub,
@@ -81,8 +85,8 @@ if (
         )
         if code != 200:
             log.error(
-                "openai_api_probe falló: la clave en OPENAI_API_KEY no es aceptada por OpenAI. "
-                "Generá una nueva en https://platform.openai.com/api-keys y reemplazá la variable en Railway."
+                "openai_api_probe falló: la clave (CREW_OPENAI_API_KEY o OPENAI_API_KEY) no es aceptada por OpenAI. "
+                "Generá una nueva en https://platform.openai.com/api-keys y actualizá la variable en Railway."
             )
     except OSError as e:
         log.warning(structured_log_line("openai_api_probe_error", error=str(e)))

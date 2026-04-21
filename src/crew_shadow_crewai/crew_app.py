@@ -33,7 +33,7 @@ from crew_shadow_crewai.models import (
     ShadowCompareResponse,
 )
 from crew_shadow_crewai.observability import structured_log_line
-from crew_shadow_crewai.openai_env import normalize_openai_api_key
+from crew_shadow_crewai.openai_env import effective_normalized_openai_api_key
 
 log = logging.getLogger(__name__)
 
@@ -125,8 +125,7 @@ def _shadow_crew_llm() -> LLM:
     """
     API key explícita (además de os.environ) para evitar desalineación con el provider OpenAI de CrewAI.
     """
-    raw = os.environ.get("OPENAI_API_KEY")
-    api_key, _ = normalize_openai_api_key(raw)
+    api_key, _src = effective_normalized_openai_api_key()
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
     model_raw = (os.environ.get("OPENAI_MODEL_NAME") or "gpt-4o-mini").strip()
@@ -364,8 +363,8 @@ def run_crew(body: ShadowCompareRequest) -> ShadowCompareResponse:
     if _use_crew_stub():
         log.info("USE_CREW_STUB activo: respuesta stub")
         return _stub_response(body)
-    if not os.environ.get("OPENAI_API_KEY"):
-        log.warning("OPENAI_API_KEY ausente: usando stub")
+    if not effective_normalized_openai_api_key()[0]:
+        log.warning("CREW_OPENAI_API_KEY / OPENAI_API_KEY ausente: usando stub")
         return _stub_response(body)
     try:
         resp = _crew_llm_response(body)

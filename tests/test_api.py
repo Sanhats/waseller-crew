@@ -15,6 +15,26 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+def test_pick_raw_openai_api_key_crew_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    from crew_shadow_crewai.openai_env import pick_raw_openai_api_key_from_environ
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-from-openai")
+    monkeypatch.setenv("CREW_OPENAI_API_KEY", "sk-from-crew")
+    raw, src = pick_raw_openai_api_key_from_environ()
+    assert raw == "sk-from-crew"
+    assert src == "CREW_OPENAI_API_KEY"
+
+
+def test_pick_raw_openai_api_key_falls_back_to_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+    from crew_shadow_crewai.openai_env import pick_raw_openai_api_key_from_environ
+
+    monkeypatch.delenv("CREW_OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-only-openai")
+    raw, src = pick_raw_openai_api_key_from_environ()
+    assert raw == "sk-only-openai"
+    assert src == "OPENAI_API_KEY"
+
+
 def test_normalize_openai_api_key() -> None:
     from crew_shadow_crewai.openai_env import normalize_openai_api_key
 
