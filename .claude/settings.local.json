@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv tree *)",
+      "Bash(USE_CREW_STUB=1 python -m pytest tests/test_api.py -v)",
+      "Bash(USE_CREW_STUB=1 .venv/Scripts/python.exe -m pytest tests/test_api.py -v)",
+      "Bash(.venv/Scripts/python.exe *)",
+      "Bash(USE_CREW_STUB=1 .venv/Scripts/python.exe -m pytest tests/test_api.py -q)"
+    ]
+  }
+}

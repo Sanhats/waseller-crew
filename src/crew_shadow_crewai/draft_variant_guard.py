@@ -26,11 +26,33 @@ log = logging.getLogger(__name__)
 # Preguntas típicas de seguimiento (español rioplatense / neutro).
 _VARIANT_ASK_RE = re.compile(
     r"(?:"
-    r"\b(?:otro|otra|otros|otras)\s+(?:color|colores|talle|talles|tamaño|tamaños|medida|medidas|modelo)\b"
-    r"|\bten(?:és|es)\s+(?:en\s+)?(?:otro|otra)\s+(?:color|talle|medida|modelo)\b"
-    r"|\bhay\s+(?:en\s+)?(?:otro|otra)\s+(?:color|talle)\b"
-    r"|\b(?:algún|algun|alguna)\s+otro\s+color\b"
-    r"|\bcolores?\s+(?:distinto|distinta|diferente|otro|otra|más)\b"
+    # "otro color / otro talle / otro modelo" en cualquier forma
+    r"\b(?:otro|otra|otros|otras)\s+(?:color|colores|talle|talles|talla|tallas|tamaño|tamaños|medida|medidas|modelo|modelos)\b"
+    # "tenés otro color / tenés en otro talle"
+    r"|\bten(?:és|es)\s+(?:en\s+)?(?:otro|otra)\s+(?:color|talle|talla|medida|modelo)\b"
+    # "hay otro color / hay en otro talle"
+    r"|\bhay\s+(?:en\s+)?(?:otro|otra)\s+(?:color|talle|talla)\b"
+    # "algún otro color"
+    r"|\b(?:algún|algun|alguna)\s+otro\s+(?:color|talle|modelo)\b"
+    # "colores distintos / color más"
+    r"|\bcolores?\s+(?:distinto|distinta|diferente|otro|otra|más|mas)\b"
+    # "¿sale en otro color/talle?"
+    r"|\bsale[ns]?\s+en\s+(?:otro|otra)\s+(?:color|talle|talla|medida|modelo)\b"
+    # "hay más colores / hay más talles"
+    r"|\bhay\s+(?:más|mas)\s+(?:colores?|talles?|tallas?|medidas?|modelos?)\b"
+    # "¿en qué colores viene? / ¿en qué talles lo tienen?"
+    r"|\ben\s+qu[eé]\s+(?:colores?|talles?|tallas?|medidas?|modelos?)\b"
+    # "¿qué colores tienen? / ¿qué talles hay?"
+    r"|\bqu[eé]\s+colores?\s+(?:tienen?|ten[eé]s|hay|manejan?|trabajan?)\b"
+    r"|\bqu[eé]\s+(?:talles?|tallas?|medidas?)\s+(?:tienen?|ten[eé]s|hay|manejan?)\b"
+    # "quiero / necesito / busco en otro color/talle"
+    r"|\b(?:quiero|necesito|busco)\s+(?:en\s+)?(?:otro|otra)\s+(?:color|talle|talla|medida|modelo)\b"
+    # "más colores / más talles" como pregunta suelta
+    r"|\bm[aá]s\s+(?:colores?|talles?|tallas?|medidas?|modelos?)\b"
+    # "talles disponibles / colores disponibles"
+    r"|\b(?:talles?|tallas?|colores?)\s+disponibles?\b"
+    # "viene en otros colores / sale en otros talles"
+    r"|\b(?:viene|vienen|sale|salen)\s+en\s+(?:otros?|otras?)\s+(?:colores?|talles?|tallas?|medidas?|modelos?)\b"
     r")",
     re.IGNORECASE | re.UNICODE,
 )
@@ -177,6 +199,22 @@ def stock_lacks_alternative_for_incoming(rows: list[dict[str, Any]], incoming: s
     return len(rows) == 1
 
 
+def _stock_urgency_note(row: dict[str, Any]) -> str:
+    """Genera una nota de urgencia si el stock disponible es bajo."""
+    for key in ("availableStock", "stock", "disponible", "cantidad"):
+        val = row.get(key)
+        if val is None:
+            continue
+        try:
+            n = int(val)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= 3:
+            return f" (quedan {n} {'unidad' if n == 1 else 'unidades'})"
+        break
+    return ""
+
+
 def build_variant_only_reply(
     *,
     asks_colorish: bool,
@@ -185,28 +223,31 @@ def build_variant_only_reply(
     row: dict[str, Any],
 ) -> str:
     tail = _short_variant_tail(row)
+    urgency = _stock_urgency_note(row)
     if asks_colorish:
         return (
-            "Sobre el color: en el inventario que me pasaron solo figura esta variante"
-            f"{tail}. No aparece otra fila con otro color. "
-            "Si te sirve así, ¿querés que te reserve una? "
-            "Si buscás otro tono, en tienda pueden confirmarte si hay algo que aún no está cargado acá."
+            f"Sobre el color: en el inventario que manejo ahora mismo solo figura esta variante{tail}{urgency}. "
+            "No aparece otra fila con otro color disponible. "
+            "¿Te sirve esta opción? Si es así, te la reservo ahora para que no se te vaya. "
+            "Si buscás otro tono, decime y consulto si hay algo sin cargar en el sistema todavía."
         )
     if asks_size:
         return (
-            "Sobre el talle/medida: en los datos que tengo acá solo aparece esta opción"
-            f"{tail}. No veo otra fila con otra medida. "
-            "Si te sirve, ¿te reservo? Si necesitás otro tamaño, en tienda pueden confirmarte stock adicional."
+            f"Sobre el talle: en los datos que tengo en este momento solo aparece esta opción{tail}{urgency}. "
+            "No veo otra medida disponible en el listado. "
+            "¿Te queda bien así? Puedo reservártela enseguida. "
+            "Si necesitás otro tamaño, consultamos en tienda si hay stock adicional."
         )
     if asks_model:
         return (
-            "Sobre el modelo: en el inventario enviado solo figura esta variante"
-            f"{tail}. Si querés otra línea de producto, decime qué buscás y reviso el listado."
+            f"Sobre el modelo: en el inventario que tengo cargado solo figura esta variante{tail}{urgency}. "
+            "Si te interesa otra línea de producto, contame qué buscás y reviso qué más hay en el listado. "
+            "¿Armamos el pedido con este o preferís que busque algo diferente?"
         )
     return (
-        "Sobre esa consulta: en los datos del inventario que tengo acá solo aparece esta opción"
-        f"{tail}. Si te sirve, ¿te reservo? "
-        "Si necesitás otra medida o modelo, decime y veo qué más hay en el listado."
+        f"En el inventario que tengo disponible ahora solo aparece esta opción{tail}{urgency}. "
+        "¿Te sirve? Si es así, te la reservo para asegurártela. "
+        "Si necesitás otra medida o modelo, decime qué buscás y veo qué más tenemos."
     )
 
 

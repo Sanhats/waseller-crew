@@ -43,13 +43,31 @@ def _default_tenant_prompts_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "tenant_prompts"
 
 
+def _prompt_base_dir() -> Path:
+    raw = os.environ.get("CREW_TENANT_PROMPTS_DIR", "").strip()
+    return Path(raw).expanduser() if raw else _default_tenant_prompts_dir()
+
+
+def _load_global_prompt_overlay() -> str:
+    """Guía de ventas global (_global.txt). Se aplica a todos los tenants siempre."""
+    path = _prompt_base_dir() / "_global.txt"
+    if not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            return ""
+        return f"\n\n=== Guía de ventas global ===\n{text}\n=== Fin guía global ===\n"
+    except OSError:
+        log.warning("No se pudo leer overlay global: %s", path)
+        return ""
+
+
 def _load_tenant_prompt_overlay(slug: str | None) -> str:
-    """Texto opcional desde tenant_prompts/<slug>.txt o CREW_TENANT_PROMPTS_DIR."""
+    """Overlay específico por rubro desde tenant_prompts/<slug>.txt. Layerea sobre el global."""
     if not slug:
         return ""
-    raw = os.environ.get("CREW_TENANT_PROMPTS_DIR", "").strip()
-    base = Path(raw).expanduser() if raw else _default_tenant_prompts_dir()
-    path = base / f"{slug}.txt"
+    path = _prompt_base_dir() / f"{slug}.txt"
     if not path.is_file():
         return ""
     try:
@@ -92,7 +110,7 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         if body.businessProfileSlug
         else ""
     )
-    overlay = _load_tenant_prompt_overlay(body.businessProfileSlug)
+    overlay = _load_global_prompt_overlay() + _load_tenant_prompt_overlay(body.businessProfileSlug)
     narrow = (body.inventoryNarrowingNote or "").strip()
     narrow_block = ""
     if narrow:
@@ -103,8 +121,8 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
     return (
         "\n## Rol, tenant e inventario\n"
         f"- Actuás como **asistente de ventas del negocio** identificado por tenantId={body.tenantId} "
-        f"en el JSON de contexto.{profile} Tu objetivo es ayudar a cerrar la venta con tono profesional "
-        "y claro.\n"
+        f"en el JSON de contexto.{profile} Tu objetivo principal es **cerrar la venta o avanzar un paso "
+        "concreto hacia ella**: cotizar, confirmar variante, ofrecer reserva o generar el link de pago.\n"
         f"- {stock_hint}\n"
         "- Usá incomingText como mensaje actual del lead y recentMessages (si hay) como contexto "
         "reciente; no ignores contradicciones entre mensajes.\n"
@@ -120,6 +138,16 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         "mismo texto** (mismo precio, color, talle, stock y cierre) que el último envío del asistente: "
         "**fallaste** — reescribí desde cero: negativa clara o listado de otras filas, sin copiar el "
         "bloque anterior.\n"
+        "- **Urgencia y escasez (natural):** Si una fila de stockTable tiene `availableStock` o `stock` "
+        "entre 1 y 3, podés mencionarlo de forma natural ('quedan pocas unidades', 'son las últimas que "
+        "tengo en ese talle') para motivar la decisión. No exageres ni inventes cantidades fuera del dato.\n"
+        "- **Cierre activo:** Cuando el producto está disponible y el lead muestra interés, **siempre** "
+        "terminá con una pregunta de cierre o CTA: '¿Te lo reservo?', '¿Armamos el pedido?', "
+        "'¿Querés que lo aparte?'. Usá nextAction `offer_reservation` o `reserve_stock` según el caso. "
+        "No termines el mensaje sin un paso concreto propuesto.\n"
+        "- **Cross-sell:** Si el producto exacto no está en stockTable pero hay alternativas similares "
+        "(mismo rubro, precio cercano, otro color/talle disponible), ofrecelas con nombre y precio real. "
+        "Usá `suggest_alternative` y listá máximo 2 opciones concretas de stockTable.\n"
         f"{narrow_block}"
         "- nextAction / recommendedAction deben seguir el vocabulario Waseller ya indicado abajo.\n"
         f"{overlay}"
