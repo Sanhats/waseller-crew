@@ -345,6 +345,130 @@ def test_variant_guard_uses_baseline_when_no_recent_outgoing() -> None:
     assert out.candidateDecision.draftReply != prev
 
 
+def test_followup_guards_multi_variant_list_on_duplicate() -> None:
+    from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards
+    from crew_shadow_crewai.models import (
+        CandidateDecision,
+        RecentMessageItem,
+        ShadowCompareRequest,
+        ShadowCompareResponse,
+    )
+
+    prev = "Misma ficha repetida."
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="otro color?",
+        interpretation={},
+        baselineDecision={"draftReply": prev},
+        recentMessages=[RecentMessageItem(direction="outgoing", message=prev)],
+        stockTable=[
+            {"name": "A", "color": "rojo", "stock": 1},
+            {"name": "A", "color": "azul", "stock": 2},
+        ],
+    )
+    resp = ShadowCompareResponse(candidateDecision=CandidateDecision(draftReply=prev))
+    out = apply_followup_draft_guards(body, resp)
+    assert out.candidateDecision is not None
+    dr = out.candidateDecision.draftReply or ""
+    assert dr != prev
+    assert "rojo" in dr.lower()
+    assert "azul" in dr.lower()
+    assert "multi_variant_list_guard" in (out.candidateDecision.reason or "")
+
+
+def test_followup_guards_quantity_over_stock() -> None:
+    from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards
+    from crew_shadow_crewai.models import (
+        CandidateDecision,
+        RecentMessageItem,
+        ShadowCompareRequest,
+        ShadowCompareResponse,
+    )
+
+    prev = "Producto X $1000, tengo 2 disponibles, ¿te lo reservo?"
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="quiero 15 unidades",
+        interpretation={},
+        baselineDecision={"draftReply": prev},
+        recentMessages=[RecentMessageItem(direction="outgoing", message=prev)],
+        stockTable=[{"name": "X", "stock": 2}],
+    )
+    resp = ShadowCompareResponse(candidateDecision=CandidateDecision(draftReply=prev))
+    out = apply_followup_draft_guards(body, resp)
+    assert out.candidateDecision is not None
+    dr = out.candidateDecision.draftReply or ""
+    assert "15" in dr
+    assert "2" in dr
+    assert "quantity_stock_guard" in (out.candidateDecision.reason or "")
+
+
+def test_followup_guards_catalog_scope_duplicate() -> None:
+    from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards
+    from crew_shadow_crewai.models import (
+        CandidateDecision,
+        RecentMessageItem,
+        ShadowCompareRequest,
+        ShadowCompareResponse,
+    )
+
+    prev = "Solo este producto en oferta, ¿te interesa?"
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="tenés catálogo completo?",
+        interpretation={},
+        baselineDecision={"draftReply": prev},
+        recentMessages=[RecentMessageItem(direction="outgoing", message=prev)],
+        stockTable=[{"name": "Uno solo", "stock": 1}],
+        inventoryNarrowingNote="Solo variantes del producto consultado.",
+    )
+    resp = ShadowCompareResponse(candidateDecision=CandidateDecision(draftReply=prev))
+    out = apply_followup_draft_guards(body, resp)
+    assert out.candidateDecision is not None
+    dr = out.candidateDecision.draftReply or ""
+    assert "stockTable" in dr
+    assert "catalog_scope_guard" in (out.candidateDecision.reason or "")
+
+
+def test_followup_guards_generic_envio_duplicate() -> None:
+    from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards
+    from crew_shadow_crewai.models import (
+        CandidateDecision,
+        RecentMessageItem,
+        ShadowCompareRequest,
+        ShadowCompareResponse,
+    )
+
+    prev = "Remera azul $5000, ¿te la reservo?"
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="y el envío cuánto sale?",
+        interpretation={},
+        baselineDecision={"draftReply": prev},
+        recentMessages=[RecentMessageItem(direction="outgoing", message=prev)],
+        stockTable=[{"name": "Remera", "stock": 3}],
+    )
+    resp = ShadowCompareResponse(candidateDecision=CandidateDecision(draftReply=prev))
+    out = apply_followup_draft_guards(body, resp)
+    assert out.candidateDecision is not None
+    dr = out.candidateDecision.draftReply or ""
+    assert dr != prev
+    assert "envío" in dr.lower() or "entrega" in dr.lower()
+    assert "generic_followup_dedupe_guard" in (out.candidateDecision.reason or "")
+
+
 def test_shadow_compare_unsupported_kind(client: TestClient) -> None:
     r = client.post(
         "/shadow-compare",

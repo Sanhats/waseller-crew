@@ -26,7 +26,7 @@ from crew_shadow_crewai.constants import (
     INTERPRETATION_SOURCE_ENUM_DOC,
     NEXT_ACTION_ENUM_DOC,
 )
-from crew_shadow_crewai.draft_variant_guard import apply_variant_followup_guard
+from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards
 from crew_shadow_crewai.models import (
     CandidateDecision,
     CandidateInterpretation,
@@ -101,7 +101,7 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         stock_hint = (
             f"stockTable trae {len(rows)} fila(s). Interpretá cada fila usando **solo** las claves y "
             "valores que aparecen en el JSON (es el mismo esquema que Waseller usa en su tabla). "
-            "No agregues productos, precios ni stock que no surjan de esas filas o del texto ya "
+            "No agregues productos, precios ni stock que no surgan de esas filas o del texto ya "
             "presente en baseline/interpretation. Si incomingText no matchea ninguna fila, no inventes: "
             "pedí datos o ofrecé alternativas alineadas a filas existentes."
         )
@@ -115,29 +115,56 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
     narrow_block = ""
     if narrow:
         narrow_block = (
-            f"\n- **Nota de acotación de inventario (Waseller):** {narrow[:4000]}\n"
-            "  Usala junto con stockTable; no la contradigas salvo que sea incoherente con las filas.\n"
+            f"\n- **PRIORIDAD — Nota de acotación de inventario (Waseller):** {narrow[:4000]}\n"
+            "  Leela **antes** de interpretar stockTable: delimita alcance (un producto, una fila, RAG, "
+            "filtros, catálogo parcial, etc.). Tu respuesta debe ser coherente con ese alcance; si el lead "
+            "pide “todo el catálogo” y la nota aclara que el payload es acotado, **no inventes** listados "
+            "ni otros productos: explicá el alcance y pedí criterio de búsqueda o palabras clave.\n"
+        )
+    else:
+        narrow_block = (
+            "\n- **Acotación de inventario:** Si no hay nota explícita, igual asumí que stockTable puede "
+            "ser un subconjunto del catálogo real; no afirmes que tenés “todos los productos” si solo "
+            "ves pocas filas.\n"
         )
     return (
         "\n## Rol, tenant e inventario\n"
         f"- Actuás como **asistente de ventas del negocio** identificado por tenantId={body.tenantId} "
         f"en el JSON de contexto.{profile} Tu objetivo principal es **cerrar la venta o avanzar un paso "
         "concreto hacia ella**: cotizar, confirmar variante, ofrecer reserva o generar el link de pago.\n"
+        f"{narrow_block}"
         f"- {stock_hint}\n"
+        "- **stockTable como fuente de variantes:** Si hay **varias filas** y el lead pregunta por "
+        "**color** o **talle/medida**, enumerá las opciones **solo** con valores que aparezcan en las "
+        "columnas correspondientes de la tabla (sin inventar tonos o talles). Si hay **una sola fila**, "
+        "decí con claridad que en **este** inventario no aparece otra variante distinta; no inventes "
+        "stock alternativo fuera de las filas.\n"
+        "- **Cantidad vs stock mostrado:** Si en incomingText el lead pide **más unidades** que la "
+        "suma o el máximo razonable que se desprende de las columnas de stock en stockTable, "
+        "reconocé la diferencia: ofrecé **reservar lo disponible** según la tabla y, según el rubro "
+        "(repuesto, indumentaria, mueblería, etc.), mencioná **asesor humano** o **reposición** sin "
+        "prometer plazos ni cantidades que no estén en datos.\n"
         "- Usá incomingText como mensaje actual del lead y recentMessages (si hay) como contexto "
         "reciente; no ignores contradicciones entre mensajes.\n"
         "- **Seguimiento (obligatorio):** Si incomingText pide **otro color**, **otro talle**, **otro modelo**, "
-        "**otra medida**, **más unidades**, **envío**, etc., tu **primer párrafo** debe contestar eso. "
+        "**otra medida**, **más unidades**, **otro producto**, **catálogo**, **envío**, etc., tu **primer "
+        "párrafo** debe contestar eso. "
         "Revisá **todas** las filas de stockTable (mismo producto u otros) y listá **solo** variantes que "
         "aparezcan en datos (colores/talles distintos en otras filas). Si **ninguna** otra fila trae otro "
         "color/talle, decí explícitamente que en el inventario enviado **solo figura** esa variante "
         "(nombrala una vez) y ofrecé ayuda (otro producto del listado, reserva, tienda física, etc.). "
         "**Prohibido** responder solo re-enviando la misma ficha de producto del mensaje anterior.\n"
+        "- **Catálogo / “qué más tenés” con payload acotado:** Si stockTable tiene **pocas filas o una** "
+        "y el lead pide catálogo u otros productos, **no inventes** listados: explicá que tu vista es la "
+        "de la tabla enviada, citá inventoryNarrowingNote si aplica, y pedí **criterio de búsqueda** "
+        "(nombre, rubro, presupuesto) para poder ayudar en el próximo turno.\n"
         "- **Anti-repetición (dura):** Compará candidateDecision/baselineDecision.draftReply y los "
-        "mensajes del asistente en recentMessages. Si el lead pide variante y tu borrador sería **casi el "
-        "mismo texto** (mismo precio, color, talle, stock y cierre) que el último envío del asistente: "
-        "**fallaste** — reescribí desde cero: negativa clara o listado de otras filas, sin copiar el "
-        "bloque anterior.\n"
+        "mensajes del asistente en recentMessages. Si el lead **cambia de tema** respecto al cierre del "
+        "turno anterior (color, talle, cantidad, otro producto, catálogo, envío, etc.) y tu borrador sería "
+        "**casi el mismo texto** (misma ficha, mismo precio, mismo cierre) que el último **outgoing** del "
+        "asistente: **fallaste** — reescribí desde cero contestando lo nuevo; no repitas el cierre del "
+        "baseline si solo reenvía la misma oferta. Si el lead pidió variante y tu borrador repite la ficha: "
+        "listado de otras filas o negativa clara, sin copiar el bloque anterior.\n"
         "- **Urgencia y escasez (natural):** Si una fila de stockTable tiene `availableStock` o `stock` "
         "entre 1 y 3, podés mencionarlo de forma natural ('quedan pocas unidades', 'son las últimas que "
         "tengo en ese talle') para motivar la decisión. No exageres ni inventes cantidades fuera del dato.\n"
@@ -148,7 +175,6 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         "- **Cross-sell:** Si el producto exacto no está en stockTable pero hay alternativas similares "
         "(mismo rubro, precio cercano, otro color/talle disponible), ofrecelas con nombre y precio real. "
         "Usá `suggest_alternative` y listá máximo 2 opciones concretas de stockTable.\n"
-        f"{narrow_block}"
         "- nextAction / recommendedAction deben seguir el vocabulario Waseller ya indicado abajo.\n"
         f"{overlay}"
     )
@@ -421,7 +447,7 @@ def run_crew(body: ShadowCompareRequest) -> ShadowCompareResponse:
         return _stub_response(body)
     try:
         resp = _crew_llm_response(body)
-        resp = apply_variant_followup_guard(body, resp)
+        resp = apply_followup_draft_guards(body, resp)
         return _enrich_empty_draft_reply(resp, body)
     except Exception as e:
         hint = _openai_failure_hint(e)

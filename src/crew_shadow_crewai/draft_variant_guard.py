@@ -9,6 +9,7 @@ igual devuelve el mismo párrafo que el turno anterior.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import unicodedata
 from difflib import SequenceMatcher
@@ -86,11 +87,418 @@ def _similarity_ratio(a: str, b: str) -> float:
     return float(SequenceMatcher(None, _fold(a), _fold(b)).ratio())
 
 
-def drafts_substantially_duplicate(new_draft: str, previous_outgoing: str, *, threshold: float = 0.78) -> bool:
+def _dedupe_similarity_threshold() -> float:
+    """Umbral 0.5–0.99; configurable con CREW_SHADOW_DEDUPE_SIMILARITY (default 0.78)."""
+    raw = os.environ.get("CREW_SHADOW_DEDUPE_SIMILARITY", "").strip()
+    if not raw:
+        return 0.78
+    try:
+        v = float(raw.replace(",", "."))
+    except ValueError:
+        return 0.78
+    return min(0.99, max(0.5, v))
+
+
+def drafts_substantially_duplicate(
+    new_draft: str, previous_outgoing: str, *, threshold: float | None = None
+) -> bool:
     """True si el nuevo borrador es casi el mismo texto que el último mensaje del asistente."""
     if not new_draft.strip() or not previous_outgoing.strip():
         return False
-    return _similarity_ratio(new_draft, previous_outgoing) >= threshold
+    th = _dedupe_similarity_threshold() if threshold is None else threshold
+    return _similarity_ratio(new_draft, previous_outgoing) >= th
+
+
+def _env_guard_enabled(var_name: str, *, default: bool = True) -> bool:
+    raw = os.environ.get(var_name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
+_CATALOG_ASK_RE = re.compile(
+    r"(?:"
+    r"\bcat[aá]logos?\b"
+    r"|\b(?:list(?:a|ado)\s+completo|todo\s+el\s+cat[aá]logo)\b"
+    r"|\bqu[eé]\s+m[aá]s\s+(?:ten[eé]s|tienen|hay|ofrecen)\b"
+    r"|\bqu[eé]\s+otros?\s+productos?\b"
+    r"|\botros?\s+productos?\b"
+    r"|\balgo\s+m[aá]s\b"
+    r"|\bten[eé]s\s+m[aá]s\b"
+    r"|\bproductos?\s+disponibles?\b"
+    r")",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_MISC_FOLLOWUP_RE = re.compile(
+    r"(?:"
+    r"\benv[ií]os?\b"
+    r"|\bentregas?\b"
+    r"|\b(?:retiro|retirar)(?:\s+en\s+(?:local|tienda))?\b"
+    r"|\bmedios?\s+de\s+pago\b"
+    r"|\bformas?\s+de\s+pago\b"
+    r")",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_STOCK_NUMERIC_KEYS: tuple[str, ...] = (
+    "availableStock",
+    "stock",
+    "cantidad",
+    "quantity",
+    "disponible",
+    "inventory",
+    "qty",
+    "stockDisponible",
+)
+
+
+def incoming_asks_catalog_or_broader_products(text: str) -> bool:
+    return bool(_CATALOG_ASK_RE.search((text or "").strip()))
+
+
+def total_stock_units(rows: list[dict[str, Any]]) -> int:
+    """Suma por fila un único valor numérico de stock (primera clave reconocida)."""
+    total = 0
+    for row in rows:
+        for k in _STOCK_NUMERIC_KEYS:
+            if k not in row:
+                continue
+            val = row.get(k)
+            if val is None:
+                continue
+            try:
+                n = int(float(str(val).replace(",", ".").strip()))
+                if n >= 0:
+                    total += n
+                break
+            except (TypeError, ValueError):
+                break
+    return total
+
+
+def extract_requested_quantity(text: str) -> int | None:
+    """
+    Cantidad pedida en el mensaje (heurística). None si no hay señal clara.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return None
+    if re.search(r"\bmedia\s+docena\b", t):
+        return 6
+    m_doc = re.search(r"\b(\d{1,3})\s*docenas?\b", t)
+    if m_doc:
+        return int(m_doc.group(1)) * 12
+    patterns = (
+        r"\bquiero\s+(\d{1,5})\b",
+        r"\b(?:pedir(?:[ei]a)?|necesito|llevamos?|llevo|mandame|mand[aá]me)\s+(?:unas?\s+)?(\d{1,5})\b",
+        r"\b(?:son|somos)\s+(\d{1,5})\b",
+        r"\b(\d{1,5})\s*(?:unidades?|uds?\.?|u\.?|piezas?)\b",
+        r"\bcantidad\s*:?\s*(\d{1,5})\b",
+        r"\b(?:pedido|reserva)\s+(?:de\s+)?(\d{1,5})\b",
+    )
+    best: int | None = None
+    for p in patterns:
+        for m in re.finditer(p, t):
+            n = int(m.group(1))
+            if 1 <= n <= 50_000:
+                best = max(best or 0, n)
+    return best
+
+
+def narrow_suggests_partial_inventory(narrow: str | None) -> bool:
+    n = _fold(narrow or "")
+    if not n:
+        return False
+    hints = (
+        "catalogo",
+        "filtr",
+        "solo variant",
+        "una fila",
+        "un producto",
+        "resultado",
+        "acot",
+        "subconj",
+        "rag",
+        "parcial",
+        "listado",
+        "mas de",
+        "más de",
+        "completo tiene",
+    )
+    return any(h in n for h in hints)
+
+
+def _limited_catalog_scope(body: ShadowCompareRequest) -> bool:
+    rows = body.stockTable or []
+    if len(rows) <= 1:
+        return True
+    return narrow_suggests_partial_inventory(body.inventoryNarrowingNote)
+
+
+def _duplicate_vs_recent(
+    draft: str, body: ShadowCompareRequest
+) -> tuple[bool, str, str]:
+    """(es_duplicado, last_out, baseline_draft)."""
+    last_out = _last_outgoing_text(body.recentMessages)
+    baseline_draft = ""
+    if isinstance(body.baselineDecision, dict):
+        baseline_draft = str(body.baselineDecision.get("draftReply") or "").strip()
+    rep_last = bool(last_out) and drafts_substantially_duplicate(draft, last_out)
+    rep_base = bool(baseline_draft) and drafts_substantially_duplicate(draft, baseline_draft)
+    return (rep_last or rep_base), last_out, baseline_draft
+
+
+def build_multi_variant_options_reply(rows: list[dict[str, Any]], incoming: str) -> str:
+    colors = unique_color_values(rows)
+    sizes = unique_size_values(rows)
+    parts: list[str] = []
+    if _asks_mostly_color(incoming) and len(colors) > 1:
+        parts.append("colores: " + ", ".join(colors))
+    if _asks_mostly_size(incoming) and len(sizes) > 1:
+        parts.append("talles/medidas: " + ", ".join(sizes))
+    if not parts:
+        if len(colors) > 1:
+            parts.append("colores: " + ", ".join(colors))
+        if len(sizes) > 1:
+            parts.append("talles/medidas: " + ", ".join(sizes))
+    if not parts:
+        return ""
+    joined = "; ".join(parts)
+    return (
+        f"Respecto de lo que preguntás, en stockTable aparecen estas opciones: {joined}. "
+        "¿Cuál te interesa? Te confirmo precio y disponibilidad de la que elijas."
+    )
+
+
+def build_catalog_scope_reply(body: ShadowCompareRequest) -> str:
+    narrow = (body.inventoryNarrowingNote or "").strip()
+    narrow_sentence = (
+        f" Waseller indicó esto sobre el alcance: «{narrow[:500]}»." if narrow else ""
+    )
+    return (
+        "Sobre catálogo u otros productos: en este turno solo tengo la vista de inventario que viene "
+        f"en stockTable (no es el catálogo completo de la tienda).{narrow_sentence} "
+        "Pasame qué buscás (nombre, rubro, presupuesto aproximado o palabras clave) y en el próximo "
+        "paso cruzamos con más líneas si el sistema las envía."
+    )
+
+
+def build_quantity_over_stock_reply(requested: int, available: int) -> str:
+    u_req = "unidad" if requested == 1 else "unidades"
+    u_av = "unidad" if available == 1 else "unidades"
+    return (
+        f"Pediste {requested} {u_req}; en stockTable la disponibilidad que veo suma {available} {u_av} "
+        "como máximo en este listado. ¿Te reservo hasta lo disponible según estos datos y coordinamos "
+        "el resto con un asesor o una posible reposición? Así no queda nada colgado."
+    )
+
+
+def build_misc_followup_dedupe_reply(incoming: str) -> str:
+    inc_l = (incoming or "").lower()
+    topic = "envío o entrega"
+    if re.search(r"pago|pagos", inc_l):
+        topic = "medios de pago"
+    elif re.search(r"retiro", inc_l):
+        topic = "retiro en local"
+    return (
+        f"Sobre {topic}: con el inventario que tengo acá solo puedo asegurar precio y disponibilidad "
+        "de lo que figura en stockTable. Ese tema lo cerramos con el equipo en el siguiente paso. "
+        "¿Seguimos con la reserva o la variante que estabas viendo?"
+    )
+
+
+def apply_multi_variant_list_guard(
+    body: ShadowCompareRequest,
+    resp: ShadowCompareResponse,
+) -> ShadowCompareResponse:
+    """
+    Varias filas con alternativas reales y borrador duplicado: lista determinística desde la tabla.
+    """
+    if not _env_guard_enabled("CREW_SHADOW_MULTI_VARIANT_LIST_GUARD", default=True):
+        return resp
+    cd = resp.candidateDecision
+    if cd is None:
+        return resp
+    draft = (cd.draftReply or "").strip()
+    if not draft:
+        return resp
+    inc = (body.incomingText or "").strip()
+    if not inc or not incoming_asks_variant_clarification(inc):
+        return resp
+    rows = body.stockTable or []
+    if stock_lacks_alternative_for_incoming(rows, inc):
+        return resp
+    dup, _, _ = _duplicate_vs_recent(draft, body)
+    if not dup:
+        return resp
+    new_text = build_multi_variant_options_reply(rows, inc)
+    if not new_text:
+        return resp
+    prev_reason = (cd.reason or "").strip()
+    new_reason = "multi_variant_list_guard" if not prev_reason else f"{prev_reason}|multi_variant_list_guard"
+    log.info(
+        structured_log_line(
+            "shadow_compare_multi_variant_list_guard_applied",
+            tenant_id=body.tenantId,
+            lead_id=body.leadId,
+            correlation_id=body.correlationId,
+        )
+    )
+    return ShadowCompareResponse(
+        candidateDecision=cd.model_copy(
+            update={"draftReply": new_text[:2000], "reason": new_reason[:500]}
+        ),
+        candidateInterpretation=resp.candidateInterpretation,
+    )
+
+
+def apply_quantity_vs_stock_guard(
+    body: ShadowCompareRequest,
+    resp: ShadowCompareResponse,
+) -> ShadowCompareResponse:
+    if not _env_guard_enabled("CREW_SHADOW_QUANTITY_GUARD", default=True):
+        return resp
+    cd = resp.candidateDecision
+    if cd is None:
+        return resp
+    draft = (cd.draftReply or "").strip()
+    if not draft:
+        return resp
+    inc = (body.incomingText or "").strip()
+    qty = extract_requested_quantity(inc)
+    rows = body.stockTable or []
+    total = total_stock_units(rows)
+    if qty is None or total <= 0 or qty <= total:
+        return resp
+    dup, _, _ = _duplicate_vs_recent(draft, body)
+    fold_d = _fold(draft)
+    mentions_available = str(total) in fold_d or re.search(
+        rf"\b{qty}\b.*\b(?:disponible|hay|tengo|quedan)\b", fold_d
+    )
+    if not dup and mentions_available:
+        return resp
+    new_text = build_quantity_over_stock_reply(qty, total)
+    prev_reason = (cd.reason or "").strip()
+    new_reason = "quantity_stock_guard" if not prev_reason else f"{prev_reason}|quantity_stock_guard"
+    log.info(
+        structured_log_line(
+            "shadow_compare_quantity_stock_guard_applied",
+            tenant_id=body.tenantId,
+            lead_id=body.leadId,
+            correlation_id=body.correlationId,
+        )
+    )
+    return ShadowCompareResponse(
+        candidateDecision=cd.model_copy(
+            update={"draftReply": new_text[:2000], "reason": new_reason[:500]}
+        ),
+        candidateInterpretation=resp.candidateInterpretation,
+    )
+
+
+def apply_catalog_scope_guard(
+    body: ShadowCompareRequest,
+    resp: ShadowCompareResponse,
+) -> ShadowCompareResponse:
+    if not _env_guard_enabled("CREW_SHADOW_CATALOG_SCOPE_GUARD", default=True):
+        return resp
+    cd = resp.candidateDecision
+    if cd is None:
+        return resp
+    draft = (cd.draftReply or "").strip()
+    if not draft:
+        return resp
+    inc = (body.incomingText or "").strip()
+    if not inc or not incoming_asks_catalog_or_broader_products(inc):
+        return resp
+    if not _limited_catalog_scope(body):
+        return resp
+    dup, _, _ = _duplicate_vs_recent(draft, body)
+    if not dup:
+        return resp
+    new_text = build_catalog_scope_reply(body)
+    prev_reason = (cd.reason or "").strip()
+    new_reason = "catalog_scope_guard" if not prev_reason else f"{prev_reason}|catalog_scope_guard"
+    log.info(
+        structured_log_line(
+            "shadow_compare_catalog_scope_guard_applied",
+            tenant_id=body.tenantId,
+            lead_id=body.leadId,
+            correlation_id=body.correlationId,
+        )
+    )
+    return ShadowCompareResponse(
+        candidateDecision=cd.model_copy(
+            update={"draftReply": new_text[:2000], "reason": new_reason[:500]}
+        ),
+        candidateInterpretation=resp.candidateInterpretation,
+    )
+
+
+def apply_generic_duplicate_followup_guard(
+    body: ShadowCompareRequest,
+    resp: ShadowCompareResponse,
+) -> ShadowCompareResponse:
+    """
+    Post-chequeo: seguimiento no cubierto por variantes/catálogo/cantidad (p. ej. envío) + borrador duplicado.
+    """
+    if not _env_guard_enabled("CREW_SHADOW_GENERIC_DEDUPE_GUARD", default=True):
+        return resp
+    cd = resp.candidateDecision
+    if cd is None:
+        return resp
+    draft = (cd.draftReply or "").strip()
+    if not draft:
+        return resp
+    inc = (body.incomingText or "").strip()
+    if not inc:
+        return resp
+    if incoming_asks_variant_clarification(inc):
+        return resp
+    if incoming_asks_catalog_or_broader_products(inc) and _limited_catalog_scope(body):
+        return resp
+    if extract_requested_quantity(inc) is not None:
+        return resp
+    if not _MISC_FOLLOWUP_RE.search(inc):
+        return resp
+    dup, _, _ = _duplicate_vs_recent(draft, body)
+    if not dup:
+        return resp
+    new_text = build_misc_followup_dedupe_reply(inc)
+    prev_reason = (cd.reason or "").strip()
+    new_reason = (
+        "generic_followup_dedupe_guard"
+        if not prev_reason
+        else f"{prev_reason}|generic_followup_dedupe_guard"
+    )
+    log.info(
+        structured_log_line(
+            "shadow_compare_generic_followup_dedupe_guard_applied",
+            tenant_id=body.tenantId,
+            lead_id=body.leadId,
+            correlation_id=body.correlationId,
+        )
+    )
+    return ShadowCompareResponse(
+        candidateDecision=cd.model_copy(
+            update={"draftReply": new_text[:2000], "reason": new_reason[:500]}
+        ),
+        candidateInterpretation=resp.candidateInterpretation,
+    )
+
+
+def apply_followup_draft_guards(
+    body: ShadowCompareRequest,
+    resp: ShadowCompareResponse,
+) -> ShadowCompareResponse:
+    """Cadena de salvaguardas post-LLM (orden importa)."""
+    resp = apply_multi_variant_list_guard(body, resp)
+    resp = apply_variant_followup_guard(body, resp)
+    resp = apply_quantity_vs_stock_guard(body, resp)
+    resp = apply_catalog_scope_guard(body, resp)
+    resp = apply_generic_duplicate_followup_guard(body, resp)
+    return resp
 
 
 def _color_keys_in_row(row: dict[str, Any]) -> list[str]:
