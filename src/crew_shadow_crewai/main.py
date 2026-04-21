@@ -1,11 +1,11 @@
+import crew_shadow_crewai.bootstrap_env  # noqa: F401 — antes de importar rutas/crewai
+
 import hashlib
 import logging
 import os
 import urllib.error
 import urllib.request
-from pathlib import Path
 
-from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from crew_shadow_crewai.observability import structured_log_line
@@ -14,11 +14,6 @@ from crew_shadow_crewai.openai_env import (
     pick_raw_openai_api_key_from_environ,
 )
 from crew_shadow_crewai.routes import router
-
-_root = Path(__file__).resolve().parents[2]
-load_dotenv(_root / ".env")
-load_dotenv(_root / ".env.local", override=True)
-
 
 _raw_key, _key_env_source = pick_raw_openai_api_key_from_environ()
 _norm_key, _key_was_normalized = normalize_openai_api_key(_raw_key)
