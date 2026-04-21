@@ -107,14 +107,18 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         f"- {stock_hint}\n"
         "- Usá incomingText como mensaje actual del lead y recentMessages (si hay) como contexto "
         "reciente; no ignores contradicciones entre mensajes.\n"
-        "- **Seguimiento:** Si el lead pregunta por **otro color**, **otro talle/medida**, **otro modelo**, "
-        "**más unidades**, **envío** o similar, respondé **eso** primero: revisá **todas** las filas de "
-        "stockTable (mismo productId/name u otras) y listá solo lo que exista en datos. Si solo hay "
-        "una variante en stockTable, decilo claro (p. ej. que en catálogo enviado solo consta ese color) "
-        "en lugar de repetir la misma ficha del turno anterior.\n"
-        "- **Anti-repetición:** No repitas un bloque comercial idéntico al mensaje saliente previo en "
-        "recentMessages si incomingText pide información nueva; reformulá según la pregunta actual "
-        "y baseline/interpretation solo como apoyo.\n"
+        "- **Seguimiento (obligatorio):** Si incomingText pide **otro color**, **otro talle**, **otro modelo**, "
+        "**otra medida**, **más unidades**, **envío**, etc., tu **primer párrafo** debe contestar eso. "
+        "Revisá **todas** las filas de stockTable (mismo producto u otros) y listá **solo** variantes que "
+        "aparezcan en datos (colores/talles distintos en otras filas). Si **ninguna** otra fila trae otro "
+        "color/talle, decí explícitamente que en el inventario enviado **solo figura** esa variante "
+        "(nombrala una vez) y ofrecé ayuda (otro producto del listado, reserva, tienda física, etc.). "
+        "**Prohibido** responder solo re-enviando la misma ficha de producto del mensaje anterior.\n"
+        "- **Anti-repetición (dura):** Compará candidateDecision/baselineDecision.draftReply y los "
+        "mensajes del asistente en recentMessages. Si el lead pide variante y tu borrador sería **casi el "
+        "mismo texto** (mismo precio, color, talle, stock y cierre) que el último envío del asistente: "
+        "**fallaste** — reescribí desde cero: negativa clara o listado de otras filas, sin copiar el "
+        "bloque anterior.\n"
         f"{narrow_block}"
         "- nextAction / recommendedAction deben seguir el vocabulario Waseller ya indicado abajo.\n"
         f"{overlay}"
@@ -296,7 +300,9 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
             "Todas las claves internas de candidateDecision son opcionales salvo las que puedas inferir.\n"
             "candidateDecision.draftReply: string **no vacío** siempre que puedas proponer texto al lead; "
             "no devuelvas \"\" ni null si hay baselineDecision.draftReply o datos en stockTable para armar "
-            "una respuesta coherente (Waseller modo primary).\n"
+            "una respuesta coherente (Waseller modo primary). Si el lead pide **otro color/talle/modelo**, "
+            "draftReply debe ser **distinto en sustancia** al último mensaje del asistente en recentMessages "
+            "(no repitas la misma ficha).\n"
             "candidateInterpretation: resumí la lectura del mensaje respecto al contexto; "
             "si no aporta valor, usá null.\n"
             f"nextAction / recommendedAction (en candidateDecision): uno de {NEXT_ACTION_ENUM_DOC}.\n"
@@ -333,9 +339,11 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
             f"{NEXT_ACTION_ENUM_DOC}.\n"
             "No contradigas stockTable del contexto: precios/disponibilidad concretos solo si "
             "salen de esas filas o del baseline sin inventar filas nuevas.\n"
-            "Si incomingText es aclaración (otro color, más stock, etc.), draftReply debe "
-            "responder eso; si el redactor repite el párrafo anterior sin aportar, reescribí mínimo "
-            "coherente con stockTable/recentMessages.\n"
+            "Si incomingText es aclaración (otro color, otro talle, más stock, etc.), draftReply debe "
+            "responder eso de forma **nueva**: si el redactor repitió casi igual el último mensaje del "
+            "asistente en recentMessages, **obligatorio** reemplazar draftReply: o listás otras filas de "
+            "stockTable con esa variante, o explicás que en datos **solo existe** la variante ya nombrada "
+            "y ofrecés siguiente paso (sin volver a pegar precio/stock/cierre idénticos al turno anterior).\n"
             "draftReply no debe quedar vacío si el contexto permite al menos un borrador útil.\n"
             "Si candidateInterpretation existe y trae nextAction, mismo conjunto.\n"
             "Si trae source, solo "
@@ -359,6 +367,21 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
     return _shadow_response_from_crew_dict(data)
 
 
+def _openai_failure_hint(exc: BaseException) -> str | None:
+    """Texto corto para logs cuando OpenAI devuelve 401 con causas conocidas."""
+    s = str(exc)
+    if "ip_not_authorized" in s or "Your IP is not authorized" in s:
+        return (
+            "openai_ip_not_authorized: la clave u organización tiene lista de IPs permitidas; "
+            "la IP de salida de Railway no está incluida. En "
+            "https://platform.openai.com/settings/organization/api-keys "
+            "desactivá la restricción por IP o usá egress con IP fija compatible con tu allowlist."
+        )
+    if "invalid_api_key" in s:
+        return "openai_invalid_api_key: revisá CREW_OPENAI_API_KEY / OPENAI_API_KEY."
+    return None
+
+
 def run_crew(body: ShadowCompareRequest) -> ShadowCompareResponse:
     if _use_crew_stub():
         log.info("USE_CREW_STUB activo: respuesta stub")
@@ -370,12 +393,14 @@ def run_crew(body: ShadowCompareRequest) -> ShadowCompareResponse:
         resp = _crew_llm_response(body)
         return _enrich_empty_draft_reply(resp, body)
     except Exception as e:
+        hint = _openai_failure_hint(e)
         log.error(
             structured_log_line(
                 "crew_failure",
                 tenant_id=body.tenantId,
                 lead_id=body.leadId,
                 error_type=type(e).__name__,
+                openai_hint=hint,
             ),
             exc_info=True,
         )
