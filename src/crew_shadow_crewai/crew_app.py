@@ -146,6 +146,14 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         "prometer plazos ni cantidades que no estén en datos.\n"
         "- Usá incomingText como mensaje actual del lead y recentMessages (si hay) como contexto "
         "reciente; no ignores contradicciones entre mensajes.\n"
+        "- **Interpretación Waseller + lectura integral del lead:** El objeto **interpretation** del JSON "
+        "(intención, entidades, nextAction sugerido, campos faltantes, etc.) suele venir de **OpenAI o reglas** "
+        "en Waseller: usalo como **señal semántica del turno**, junto con baselineDecision y el perfil de rubro. "
+        "El lead puede responder de muchas formas (agradecimiento, rechazo, cambio de tema, ironía, pedido "
+        "mezclado, aclaración vaga): leé **todo** el contexto y contestá a lo esencial de **este** mensaje. "
+        "Si interpretation y el texto discrepan, priorizá el texto del lead y el hilo. "
+        "**Hechos duros** (precio, cantidades, existencias, SKU): solo si salen de **stockTable** o del "
+        "baseline de forma inequívoca; interpretation **no** autoriza inventar filas ni stock.\n"
         "- **Seguimiento (obligatorio):** Si incomingText pide **otro color**, **otro talle**, **otro modelo**, "
         "**otra medida**, **más unidades**, **otro producto**, **catálogo**, **envío**, etc., tu **primer "
         "párrafo** debe contestar eso. "
@@ -305,6 +313,23 @@ def _shadow_response_from_crew_dict(data: dict[str, Any]) -> ShadowCompareRespon
     )
 
 
+def _interpretation_priority_banner(body: ShadowCompareRequest) -> str:
+    """Instrucciones explícitas cuando Waseller envía interpretation (OpenAI / reglas)."""
+    interp = body.interpretation if isinstance(body.interpretation, dict) else {}
+    if not interp:
+        return ""
+    return (
+        "\n## Interpretación Waseller (`interpretation` en el JSON)\n"
+        "Waseller puede rellenar este objeto con **intención, entidades, nextAction sugerido, confianza, "
+        "campos faltantes**, etc. (p. ej. vía OpenAI). Tratálo como **capa de comprensión del turno**: "
+        "combiná lo que diga ahí con **incomingText** y **recentMessages**. "
+        "Si hay conflicto entre interpretation y el texto libre del lead, **gana el texto y el hilo**. "
+        "Para **precios, stock, SKU y productos concretos**, la verdad operativa sigue siendo **stockTable** "
+        "(y baseline cuando no contradiga la tabla). interpretation **no** reemplaza inventario: no inventes "
+        "filas ni cantidades solo porque un campo sugiere algo que no está en datos.\n\n"
+    )
+
+
 def _tenant_commercial_context_redactor_note(body: ShadowCompareRequest) -> str:
     """
     Instrucción explícita para que el redactor priorice tenantCommercialContext / equivalentes en JSON.
@@ -339,12 +364,16 @@ def _use_conversation_director() -> bool:
 
 _CONVERSATIONAL_FLOW_FOR_REDACTOR = """
 ## Flujo conversacional (natural)
-Clasificá el turno con incomingText + recentMessages + interpretation (y conversationStage si viene):
+Clasificá el turno con **incomingText + recentMessages + interpretation** (y conversationStage si viene en interpretation):
 - **Saludo / primer contacto:** Breve, humano; si ya preguntan por producto, pasá enseguida a dato útil + un CTA.
 - **Seguimiento:** Primero lo que preguntaron (variante, cantidad, aclaración); no repitas toda la ficha si no hace falta.
 - **Objeción** (precio, desconfianza, "lo pienso"): reconocé la duda; valor según datos o alternativas en stockTable; cierre suave.
 - **Cierre / intención de compra:** Menos charla, más paso concreto (reserva, confirmar variante, link de pago); nextAction acorde.
-Si aplica más de uno, priorizá lo explícito en incomingText.
+- **Rechazo o “no”:** Respetá la negativa sin insistir con la misma ficha; ofrecé otra línea de ayuda según datos o pedí criterio.
+- **Cambio de tema / catálogo / “qué más tenés”:** Aclará alcance del inventario enviado y pedí criterio si hace falta; no inventes catálogo.
+- **Mensaje ambiguo o multitema:** Una frase de aclaración o priorizá lo más urgente; pedí un solo dato si falta para avanzar.
+- **Cortesía o charla lateral breve:** Respondé en una línea y volvé al paso de venta sin alargar.
+Si aplica más de uno, priorizá lo explícito en incomingText; usá interpretation para desambiguar cuando el texto sea vago.
 """
 
 
@@ -365,6 +394,10 @@ def _director_task_description() -> str:
         "- objection: duda de precio, plazo, confianza, comparación, indecisión fuerte.\n"
         "- closing: intención clara de compra o reserva.\n"
         "- mixed: mezcla evidente; tacticsForRedactor debe ordenar qué va primero.\n"
+        "- Si `interpretation` trae intent o entidades distintos del tono superficial del mensaje, "
+        "reflejalo en tacticsForRedactor (Waseller ya hizo una lectura; integrala con el hilo).\n"
+        "- Mensaje ambiguo o multitema: usá mixed y ordená en tactics: primero empatía o aclaración, "
+        "después dato concreto de stockTable si aplica.\n"
         "Respetá tenantCommercialContext del JSON si existe (tono y reglas del negocio).\n\n"
         "Contexto Waseller (JSON):\n\n{context}\n"
     )
@@ -377,6 +410,7 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
     verbose = os.environ.get("CREWAI_VERBOSE", "").lower() in ("1", "true", "yes")
 
     mission = _sales_and_stock_rules(body)
+    interp_banner = _interpretation_priority_banner(body)
     tenant_note = _tenant_commercial_context_redactor_note(body)
     flow_rules = _CONVERSATIONAL_FLOW_FOR_REDACTOR
     llm = _shadow_crew_llm()
@@ -384,9 +418,10 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
 
     redactor_goal = (
         "Proponer una decision candidata (solo telemetría) alineada al baseline y al tenant, "
-        "sin inventar catálogo: stock y precios concretos solo si vienen en stockTable o ya "
-        "están de forma inequívoca en baseline/interpretation. Adaptá tono y estructura al flujo "
-        "conversacional (saludo, seguimiento, objeción, cierre)."
+        "usando **todo** el JSON (interpretation, recentMessages, rubro, stockTable, baseline). "
+        "Sin inventar catálogo: stock y precios concretos solo si vienen en stockTable o ya "
+        "están de forma inequívoca en baseline. Adaptá tono y estructura al flujo conversacional "
+        "y a **cualquier tipo de respuesta del lead** (duda, rechazo, cambio de tema, pedido mixto, etc.)."
     )
     redactor_backstory = (
         "Sos el paso de redacción del crew shadow; representás al negocio del tenant y respetás el "
@@ -420,6 +455,7 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
 
     redactor_description = (
         "Contexto Waseller (JSON):\n\n{context}\n\n"
+        f"{interp_banner}"
         f"{tenant_note}"
         f"{redactor_intro}"
         f"{flow_rules}\n"
@@ -493,6 +529,8 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
         "stockTable con esa variante, o explicás que en datos **solo existe** la variante ya nombrada "
         "y ofrecés siguiente paso (sin volver a pegar precio/stock/cierre idénticos al turno anterior).\n"
         "draftReply no debe quedar vacío si el contexto permite al menos un borrador útil.\n"
+        "Si el JSON trae `interpretation` con intención o entidades, el borrador debe ser **coherente** "
+        "con esa lectura siempre que no contradiga stockTable ni invente datos.\n"
         "Si candidateInterpretation existe y trae nextAction, mismo conjunto.\n"
         "Si trae source, solo "
         f"{INTERPRETATION_SOURCE_ENUM_DOC}.\n"

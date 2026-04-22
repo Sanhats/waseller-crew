@@ -35,25 +35,29 @@ _VARIANT_ASK_RE = re.compile(
     r"|\bhay\s+(?:en\s+)?(?:otro|otra)\s+(?:color|talle|talla)\b"
     # "algún otro color"
     r"|\b(?:algún|algun|alguna)\s+otro\s+(?:color|talle|modelo)\b"
-    # "colores distintos / color más"
-    r"|\bcolores?\s+(?:distinto|distinta|diferente|otro|otra|más|mas)\b"
+    # "colores distintos / color más" (color(?:es)? evita colores? que en regex no matchea "color")
+    r"|\bcolor(?:es)?\s+(?:distinto|distinta|diferente|otro|otra|más|mas)\b"
     # "¿sale en otro color/talle?"
     r"|\bsale[ns]?\s+en\s+(?:otro|otra)\s+(?:color|talle|talla|medida|modelo)\b"
     # "hay más colores / hay más talles"
-    r"|\bhay\s+(?:más|mas)\s+(?:colores?|talles?|tallas?|medidas?|modelos?)\b"
-    # "¿en qué colores viene? / ¿en qué talles lo tienen?"
-    r"|\ben\s+qu[eé]\s+(?:colores?|talles?|tallas?|medidas?|modelos?)\b"
-    # "¿qué colores tienen? / ¿qué talles hay?"
-    r"|\bqu[eé]\s+colores?\s+(?:tienen?|ten[eé]s|hay|manejan?|trabajan?)\b"
+    r"|\bhay\s+(?:más|mas)\s+(?:color(?:es)?|talles?|tallas?|medidas?|modelos?)\b"
+    # "¿en qué colores viene? / ¿en qué color tenés? / ¿en qué talles lo tienen?"
+    r"|\ben\s+qu[eé]\s+(?:color(?:es)?|talles?|tallas?|medidas?|modelos?)\b"
+    # "¿qué colores tienen? / ¿qué color tenés? / ¿qué talles hay?"
+    r"|\bqu[eé]\s+color(?:es)?\s+(?:tienen?|ten[eé]s|hay|manejan?|trabajan?)\b"
+    # "que color tendrías / qué color tendrías" (WhatsApp sin tildes)
+    r"|\b(?:qu[eé]|que)\s+color(?:es)?\s+(?:tendr[íi]as|tendr[íi]a|tendr[íi]an|ten[eé]s|tienen|hay)\b"
+    # "de qué color / de que color"
+    r"|\bde\s+(?:qu[eé]|que)\s+color(?:es)?\b"
     r"|\bqu[eé]\s+(?:talles?|tallas?|medidas?)\s+(?:tienen?|ten[eé]s|hay|manejan?)\b"
     # "quiero / necesito / busco en otro color/talle"
     r"|\b(?:quiero|necesito|busco)\s+(?:en\s+)?(?:otro|otra)\s+(?:color|talle|talla|medida|modelo)\b"
     # "más colores / más talles" como pregunta suelta
-    r"|\bm[aá]s\s+(?:colores?|talles?|tallas?|medidas?|modelos?)\b"
+    r"|\bm[aá]s\s+(?:color(?:es)?|talles?|tallas?|medidas?|modelos?)\b"
     # "talles disponibles / colores disponibles"
-    r"|\b(?:talles?|tallas?|colores?)\s+disponibles?\b"
+    r"|\b(?:talles?|tallas?|color(?:es)?)\s+disponibles?\b"
     # "viene en otros colores / sale en otros talles"
-    r"|\b(?:viene|vienen|sale|salen)\s+en\s+(?:otros?|otras?)\s+(?:colores?|talles?|tallas?|medidas?|modelos?)\b"
+    r"|\b(?:viene|vienen|sale|salen)\s+en\s+(?:otros?|otras?)\s+(?:color(?:es)?|talles?|tallas?|medidas?|modelos?)\b"
     r")",
     re.IGNORECASE | re.UNICODE,
 )
@@ -397,6 +401,152 @@ def apply_quantity_vs_stock_guard(
     )
 
 
+_PRICE_ASK_RE = re.compile(
+    r"(?:"
+    r"^\s*(?:precio|valor)[\s\?¿]*$"
+    r"|\bprecio\s*[\?¿]"
+    r"|\b(?:cu[aá]l\s+es\s+el\s+)?precio\b"
+    r"|\bcu[aá]nto\s+(?:cuesta|sale|es|vale)\b"
+    r")",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def incoming_asks_price_clarification(text: str) -> bool:
+    """Pregunta breve por precio (sin repetir toda la ficha)."""
+    return bool(_PRICE_ASK_RE.search((text or "").strip()))
+
+
+def _extract_price_snippet(text: str) -> str | None:
+    for pat in (
+        r"\$\s*\d{1,3}(?:\.\d{3})+(?:,\d+)?",
+        r"\$\s*\d+(?:,\d{2})?",
+        r"\$\d[\d.,]*",
+    ):
+        m = re.search(pat, text)
+        if m:
+            return m.group(0).replace(" ", "")
+    return None
+
+
+def build_price_short_reply(draft: str) -> str:
+    price = _extract_price_snippet(draft)
+    if price:
+        return (
+            f"Te resumo: el precio que tengo cargado para esa opción es {price}. "
+            "¿Querés que te reserve una de las unidades disponibles?"
+        )
+    return (
+        "El precio es el mismo que te pasé recién; decime si querés que te reserve "
+        "o si necesitás otro dato."
+    )
+
+
+_NEGATION_DUPLICATE_RE = re.compile(
+    r"(?:"
+    r"^no\s*[\.,]?\s*$"
+    r"|no\s*,\s*no\s+quiero\b"
+    r"|\bno\s+quiero\b"
+    r"|\bno\s+me\s+interesa\b"
+    r"|\bno\s+gracias\b"
+    r")",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def incoming_suggests_stop_or_rejection(text: str) -> bool:
+    """Negación clara o 'no' solo: no seguir empujando la misma ficha."""
+    return bool(_NEGATION_DUPLICATE_RE.search((text or "").strip()))
+
+
+def build_negation_followup_reply() -> str:
+    return (
+        "Dale, lo dejamos ahí entonces. Si más adelante buscás otra cosa, decime qué rubro o producto "
+        "y veo qué aparece en el inventario que tengo cargado en este turno (sin inventar fuera de la tabla)."
+    )
+
+
+def apply_negation_followup_guard(
+    body: ShadowCompareRequest,
+    resp: ShadowCompareResponse,
+) -> ShadowCompareResponse:
+    """Lead dice no / no quiero… y el borrador repite el mismo pitch: cortar el insistir."""
+    if not _env_guard_enabled("CREW_SHADOW_NEGATION_FOLLOWUP_GUARD", default=True):
+        return resp
+    cd = resp.candidateDecision
+    if cd is None:
+        return resp
+    draft = (cd.draftReply or "").strip()
+    if not draft:
+        return resp
+    inc = (body.incomingText or "").strip()
+    if not inc or not incoming_suggests_stop_or_rejection(inc):
+        return resp
+    if incoming_asks_catalog_or_broader_products(inc):
+        return resp
+    dup, _, _ = _duplicate_vs_recent(draft, body)
+    if not dup:
+        return resp
+    new_text = build_negation_followup_reply()
+    prev_reason = (cd.reason or "").strip()
+    new_reason = "negation_followup_guard" if not prev_reason else f"{prev_reason}|negation_followup_guard"
+    log.info(
+        structured_log_line(
+            "shadow_compare_negation_followup_guard_applied",
+            tenant_id=body.tenantId,
+            lead_id=body.leadId,
+            correlation_id=body.correlationId,
+        )
+    )
+    return ShadowCompareResponse(
+        candidateDecision=cd.model_copy(
+            update={"draftReply": new_text[:2000], "reason": new_reason[:500]}
+        ),
+        candidateInterpretation=resp.candidateInterpretation,
+    )
+
+
+def apply_price_followup_guard(
+    body: ShadowCompareRequest,
+    resp: ShadowCompareResponse,
+) -> ShadowCompareResponse:
+    """Seguimiento solo por precio + borrador duplicado: respuesta corta."""
+    if not _env_guard_enabled("CREW_SHADOW_PRICE_FOLLOWUP_GUARD", default=True):
+        return resp
+    cd = resp.candidateDecision
+    if cd is None:
+        return resp
+    draft = (cd.draftReply or "").strip()
+    if not draft:
+        return resp
+    inc = (body.incomingText or "").strip()
+    if not inc or not incoming_asks_price_clarification(inc):
+        return resp
+    # "cuánto sale" dentro de una pregunta de envío no es solo precio de producto.
+    if re.search(r"\benv[ií]o\b", inc, re.IGNORECASE):
+        return resp
+    dup, _, _ = _duplicate_vs_recent(draft, body)
+    if not dup:
+        return resp
+    new_text = build_price_short_reply(draft)
+    prev_reason = (cd.reason or "").strip()
+    new_reason = "price_followup_guard" if not prev_reason else f"{prev_reason}|price_followup_guard"
+    log.info(
+        structured_log_line(
+            "shadow_compare_price_followup_guard_applied",
+            tenant_id=body.tenantId,
+            lead_id=body.leadId,
+            correlation_id=body.correlationId,
+        )
+    )
+    return ShadowCompareResponse(
+        candidateDecision=cd.model_copy(
+            update={"draftReply": new_text[:2000], "reason": new_reason[:500]}
+        ),
+        candidateInterpretation=resp.candidateInterpretation,
+    )
+
+
 def apply_catalog_scope_guard(
     body: ShadowCompareRequest,
     resp: ShadowCompareResponse,
@@ -495,6 +645,8 @@ def apply_followup_draft_guards(
     """Cadena de salvaguardas post-LLM (orden importa)."""
     resp = apply_multi_variant_list_guard(body, resp)
     resp = apply_variant_followup_guard(body, resp)
+    resp = apply_negation_followup_guard(body, resp)
+    resp = apply_price_followup_guard(body, resp)
     resp = apply_quantity_vs_stock_guard(body, resp)
     resp = apply_catalog_scope_guard(body, resp)
     resp = apply_generic_duplicate_followup_guard(body, resp)

@@ -267,6 +267,77 @@ def test_enrich_empty_draft_reply_from_baseline() -> None:
     assert out.candidateDecision.draftReply == "Texto baseline"
 
 
+def test_variant_regex_matches_en_que_color_tenes() -> None:
+    from crew_shadow_crewai.draft_variant_guard import incoming_asks_variant_clarification
+
+    assert incoming_asks_variant_clarification("en que color tenes?") is True
+    assert incoming_asks_variant_clarification("en qué color tenés?") is True
+    assert incoming_asks_variant_clarification("que color tendrias?") is True
+
+
+def test_negation_followup_guard_rewrites_duplicate() -> None:
+    from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards
+    from crew_shadow_crewai.models import (
+        CandidateDecision,
+        RecentMessageItem,
+        ShadowCompareRequest,
+        ShadowCompareResponse,
+    )
+
+    prev = "Te confirmo Mesa de algarrobo: precio $195.000 y 2 unidad(es) disponibles. ¿Querés reserva?"
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="no, no quiero la mesa de algarrobo",
+        interpretation={},
+        baselineDecision={"draftReply": prev},
+        recentMessages=[RecentMessageItem(direction="outgoing", message=prev)],
+        stockTable=[{"name": "Mesa algarrobo", "stock": 2}],
+    )
+    resp = ShadowCompareResponse(candidateDecision=CandidateDecision(draftReply=prev))
+    out = apply_followup_draft_guards(body, resp)
+    assert out.candidateDecision is not None
+    dr = out.candidateDecision.draftReply or ""
+    assert dr != prev
+    assert "negation_followup_guard" in (out.candidateDecision.reason or "")
+    assert "inventario" in dr.lower()
+
+
+def test_price_followup_guard_rewrites_duplicate() -> None:
+    from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards
+    from crew_shadow_crewai.models import (
+        CandidateDecision,
+        RecentMessageItem,
+        ShadowCompareRequest,
+        ShadowCompareResponse,
+    )
+
+    prev = (
+        "Sí, tengo Mesa de algarrobo en talle L, color marron claro. Sale $195.000. "
+        "Tengo 2 unidad(es) disponible(s). ¿Querés que te reserve una?"
+    )
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="precio?",
+        interpretation={},
+        baselineDecision={"draftReply": prev},
+        recentMessages=[RecentMessageItem(direction="outgoing", message=prev)],
+        stockTable=[{"name": "Mesa", "color": "marrón claro", "stock": 2}],
+    )
+    resp = ShadowCompareResponse(candidateDecision=CandidateDecision(draftReply=prev))
+    out = apply_followup_draft_guards(body, resp)
+    assert out.candidateDecision is not None
+    dr = out.candidateDecision.draftReply or ""
+    assert dr != prev
+    assert "$195" in dr or "195.000" in dr
+    assert "price_followup_guard" in (out.candidateDecision.reason or "")
+
+
 def test_variant_guard_rewrites_duplicate_color_followup() -> None:
     from crew_shadow_crewai.draft_variant_guard import apply_variant_followup_guard
     from crew_shadow_crewai.models import (
