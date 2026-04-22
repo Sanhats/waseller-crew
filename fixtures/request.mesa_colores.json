@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "kind": "waseller.shadow_compare.v1",
+  "tenantId": "00000000-0000-4000-8000-000000000001",
+  "leadId": "00000000-0000-4000-8000-000000000002",
+  "correlationId": "00000000-0000-4000-8000-000000000099",
+  "incomingText": "¿Qué colores tenés?",
+  "etapa": "consideration",
+  "tenantBrief": "Mueblería; priorizar disponibilidad real y no inventar variantes.",
+  "activeOffer": {
+    "productName": "Mesa de algarrobo",
+    "variantSummary": "talle L, color marrón claro",
+    "priceLabel": "$195.000",
+    "availableUnits": 2,
+    "lastAssistantMessage": "De Mesa de algarrobo tenemos talle L. Precio $195.000 y 2 unidad(es) disponibles. ¿Te reservo una?"
+  },
+  "memoryFacts": [
+    "Lead preguntó por Mesa de algarrobo",
+    "Última cotización: $195.000, stock 2"
+  ],
+  "recentMessages": [
+    {
+      "direction": "incoming",
+      "message": "hola, tienen Mesa de algarrobo?"
+    },
+    {
+      "direction": "outgoing",
+      "message": "De Mesa de algarrobo tenemos talle L. Precio $195.000 y 2 unidad(es) disponibles. ¿Te reservo una?"
+    }
+  ],
+  "businessProfileSlug": "muebles_deco",
+  "inventoryNarrowingNote": "Solo la variante consultada con stock > 0.",
+  "stockTable": [
+    {
+      "name": "Mesa de algarrobo",
+      "sku": "MES-ALG-L-MC",
+      "attributes": { "talle": "L", "color": "marrón claro", "modelo": "mesa algarrobo" },
+      "availableStock": 2,
+      "effectivePrice": 195000
+    }
+  ],
+  "interpretation": {
+    "intent": "consultar_variante",
+    "confidence": 0.86,
+    "nextAction": "reply_only",
+    "source": "openai",
+    "entities": { "productName": "Mesa de algarrobo", "askedAbout": "color" }
+  },
+  "baselineDecision": {
+    "draftReply": "De Mesa de algarrobo tenemos talle L. Precio $195.000 y 2 unidad(es) disponibles. ¿Te reservo una?",
+    "nextAction": "reply_only",
+    "confidence": 0.72,
+    "reason": "baseline_waseller"
+  }
+}

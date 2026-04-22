@@ -154,6 +154,9 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         "Si interpretation y el texto discrepan, priorizá el texto del lead y el hilo. "
         "**Hechos duros** (precio, cantidades, existencias, SKU): solo si salen de **stockTable** o del "
         "baseline de forma inequívoca; interpretation **no** autoriza inventar filas ni stock.\n"
+        "- **tenantBrief, etapa, activeOffer, memoryFacts:** Si el JSON los trae, usalos para **embudo, "
+        "última oferta y hechos del lead** junto con recentMessages; no contradigan stockTable. "
+        "Si activeOffer y la tabla discrepan en precio/stock, **gana stockTable**.\n"
         "- **Seguimiento (obligatorio):** Si incomingText pide **otro color**, **otro talle**, **otro modelo**, "
         "**otra medida**, **más unidades**, **otro producto**, **catálogo**, **envío**, etc., tu **primer "
         "párrafo** debe contestar eso. "
@@ -313,6 +316,33 @@ def _shadow_response_from_crew_dict(data: dict[str, Any]) -> ShadowCompareRespon
     )
 
 
+def _waseller_negotiation_context_block(body: ShadowCompareRequest) -> str:
+    """Bloque explícito: etapa, resumen tenant, oferta activa, hechos en memoria (Waseller)."""
+    parts: list[str] = []
+    et = (body.etapa or "").strip()
+    if et:
+        parts.append(f"**Etapa (Waseller):** {et}")
+    tb = (body.tenantBrief or "").strip()
+    if tb:
+        parts.append(f"**Resumen tenant / brief:**\n{tb[:2200]}")
+    if body.activeOffer and isinstance(body.activeOffer, dict) and body.activeOffer:
+        ao = json.dumps(body.activeOffer, ensure_ascii=False, indent=2)[:2800]
+        parts.append(f"**activeOffer (última oferta / deal; JSON):**\n{ao}")
+    if body.memoryFacts:
+        lines = "\n".join(f"- {x}" for x in (body.memoryFacts or [])[:32])
+        parts.append(f"**memoryFacts:**\n{lines}")
+    if not parts:
+        return ""
+    return (
+        "\n## Contexto de negociación Waseller\n"
+        "Combiná este bloque con **recentMessages** e **interpretation**. Reflejá la **última pregunta del "
+        "cliente** y la **última oferta** del asistente sin repetir un cierre genérico si el lead cambió de eje "
+        "(color, envío, otro producto, etc.). Si algo aquí contradice **stockTable**, prevalece la tabla.\n\n"
+        + "\n\n".join(parts)
+        + "\n\n"
+    )
+
+
 def _interpretation_priority_banner(body: ShadowCompareRequest) -> str:
     """Instrucciones explícitas cuando Waseller envía interpretation (OpenAI / reglas)."""
     interp = body.interpretation if isinstance(body.interpretation, dict) else {}
@@ -411,6 +441,7 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
 
     mission = _sales_and_stock_rules(body)
     interp_banner = _interpretation_priority_banner(body)
+    negotiation_block = _waseller_negotiation_context_block(body)
     tenant_note = _tenant_commercial_context_redactor_note(body)
     flow_rules = _CONVERSATIONAL_FLOW_FOR_REDACTOR
     llm = _shadow_crew_llm()
@@ -456,6 +487,7 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
     redactor_description = (
         "Contexto Waseller (JSON):\n\n{context}\n\n"
         f"{interp_banner}"
+        f"{negotiation_block}"
         f"{tenant_note}"
         f"{redactor_intro}"
         f"{flow_rules}\n"

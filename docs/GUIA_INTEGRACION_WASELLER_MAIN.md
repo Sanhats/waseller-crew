@@ -255,9 +255,12 @@ Guardar al menos: `candidateDecision.draftReply`, `candidateDecision.nextAction`
 
 ### Body del request
 - [ ] `recentMessages` se envía con los últimos 8 mensajes de la conversación
+- [ ] `interpretation` se envía con la lectura OpenAI/reglas de Waseller (intent, entidades, `nextAction` sugerido, etc.)
+- [ ] `baselineDecision` completo para merge y fallback de `draftReply`
 - [ ] `stockTable` se envía filtrado (solo variantes relevantes con stock > 0)
 - [ ] `businessProfileSlug` se envía con el slug del rubro del tenant
 - [ ] `inventoryNarrowingNote` se incluye cuando el inventario fue filtrado
+- [ ] Opcionales alineados al contrato: `tenantCommercialContext`, `tenantBrief`, `etapa`, `activeOffer`, `memoryFacts` (ver `docs/CONTRATO_HTTP_V1_1.md` y `docs/integrations/waseller-crew/README.md`)
 
 ### Configuración por tenant
 - [ ] Cada tenant tiene asignado su `businessProfileSlug` en Waseller

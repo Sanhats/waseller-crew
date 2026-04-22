@@ -66,6 +66,24 @@ class ShadowCompareRequest(BaseModel):
             "Se inyecta en el prompt del redactor; no reemplaza stockTable."
         ),
     )
+    tenantBrief: str | None = Field(
+        default=None,
+        max_length=2500,
+        description="Resumen corto del negocio o del lead para el prompt (Waseller; opcional).",
+    )
+    etapa: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Etapa o fase del embudo del lead (Waseller; opcional).",
+    )
+    activeOffer: dict[str, Any] | None = Field(
+        default=None,
+        description="Última oferta o deal activo (Waseller; dict flexible, p. ej. producto, precio, CTA).",
+    )
+    memoryFacts: list[str] | None = Field(
+        default=None,
+        description="Hechos recordados sobre el lead (Waseller; lista corta de strings).",
+    )
 
     @field_validator("recentMessages", mode="before")
     @classmethod
@@ -92,6 +110,39 @@ class ShadowCompareRequest(BaseModel):
             return None
         s = str(v).strip()
         return s or None
+
+    @field_validator("tenantBrief", mode="after")
+    @classmethod
+    def strip_tenant_brief(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    @field_validator("etapa", mode="after")
+    @classmethod
+    def strip_etapa(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    @field_validator("memoryFacts", mode="before")
+    @classmethod
+    def cap_memory_facts(cls, v: object) -> object:
+        if v is None:
+            return None
+        if not isinstance(v, list):
+            return v
+        out: list[str] = []
+        for item in v[:40]:
+            if item is None:
+                continue
+            s = str(item).strip()
+            if not s:
+                continue
+            out.append(s[:400])
+        return out or None
 
     @field_validator("businessProfileSlug", mode="after")
     @classmethod

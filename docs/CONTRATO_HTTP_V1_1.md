@@ -1,6 +1,6 @@
 # Contrato HTTP v1.1 — shadow compare (Waseller ↔ waseller-crew)
 
-**Fuente de verdad coordinada (Waseller):** `docs/integrations/waseller-crew/CONTRATO_V1_1.md` en el monorepo Waseller. Este archivo resume lo que **waseller-crew** implementa y cómo responder al checklist de integración.
+**Fuente de verdad coordinada (Waseller):** `docs/integrations/waseller-crew/CONTRATO_V1_1.md` en el monorepo Waseller. En **este repo**, checklist y enlaces: [`docs/integrations/waseller-crew/README.md`](integrations/waseller-crew/README.md). Este archivo resume lo que **waseller-crew** implementa y cómo responder al checklist de integración.
 
 **Compatibilidad:** `schemaVersion: 1` y `kind: waseller.shadow_compare.v1` sin cambio; los campos v1.1 son **opcionales**. Clientes solo v1 siguen válidos.
 
@@ -20,6 +20,11 @@ Alineados al documento Waseller (mismos nombres y semántica).
 | `businessProfileSlug` | `string` | Opcional. Patrón `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$` (ej. `indumentaria_calzado`). Overlay de prompts: `tenant_prompts/<slug>.txt` o directorio `CREW_TENANT_PROMPTS_DIR`. |
 | `stockTable` | `array` | Opcional. Filas alineadas a **`GET /products`** (una variante por fila). Propiedades típicas: `variantId`, `productId`, `name`, `sku`, `attributes`, `stock`, `reservedStock`, `availableStock`, `effectivePrice`, `imageUrl`, `isActive`, `tags`, `basePrice`, `variantPrice`. **Tope 500** filas por request (validado en crew). |
 | `inventoryNarrowingNote` | `string` | Opcional. Texto de Waseller sobre cómo se acotó el inventario; se inyecta al prompt del crew. |
+| `tenantCommercialContext` | `string` | Opcional (≤6000). Políticas, tono, horarios, pagos, envíos. |
+| `tenantBrief` | `string` | Opcional (≤2500). Resumen corto del negocio o contexto del lead. |
+| `etapa` | `string` | Opcional (≤500). Etapa / fase del embudo. |
+| `activeOffer` | `object` | Opcional. Dict flexible: última oferta (producto, precio, texto del asistente, etc.). |
+| `memoryFacts` | `string[]` | Opcional. Hasta **40** strings (≤400 chars c/u); hechos recordados del lead. |
 
 **Endpoints:** `POST /shadow-compare` y alias **`POST /v1/shadow-compare`** (mismo handler, misma validación Pydantic y misma auth).
 
@@ -80,7 +85,7 @@ Cada request exitosa al POST emite una línea JSON con `event: shadow_compare_co
 | Lado | Estado |
 |------|--------|
 | **Waseller** | Body extendido + Bearer condicional (según su doc). |
-| **waseller-crew** | `ShadowCompareRequest` con opcionales; auth Bearer; fixture; prompts con `stockTable` / tenant; alias `/v1/shadow-compare`. |
+| **waseller-crew** | `ShadowCompareRequest` con opcionales (incl. `tenantBrief`, `etapa`, `activeOffer`, `memoryFacts`); auth Bearer; fixtures; prompts con hilo + `stockTable` / tenant; alias `/v1/shadow-compare`. |
 | **Ops** | Mismo secret workers ↔ crew; prod: `SHADOW_COMPARE_REQUIRE_AUTH=true`; timeout worker acorde al LLM. |
 
 ---

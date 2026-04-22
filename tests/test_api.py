@@ -234,6 +234,25 @@ def test_shadow_compare_accepts_tenant_commercial_context(client: TestClient) ->
     assert r.status_code == 200
 
 
+def test_mesa_colores_fixture_parses_and_posts(client: TestClient) -> None:
+    """Diálogo mesa → colores con recentMessages + activeOffer (checklist integración)."""
+    from crew_shadow_crewai.models import ShadowCompareRequest
+
+    path = Path(__file__).resolve().parents[1] / "fixtures" / "request.mesa_colores.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    m = ShadowCompareRequest.model_validate(raw)
+    assert m.incomingText == "¿Qué colores tenés?"
+    assert m.activeOffer is not None
+    assert m.activeOffer.get("productName") == "Mesa de algarrobo"
+    assert m.memoryFacts and len(m.memoryFacts) >= 1
+    r = client.post("/shadow-compare", json=raw)
+    assert r.status_code == 200
+    data = r.json()
+    assert data.get("candidateDecision")
+    dr = (data["candidateDecision"] or {}).get("draftReply") or ""
+    assert len(dr.strip()) > 0
+
+
 def test_shadow_compare_tenant_commercial_context_max_length(client: TestClient) -> None:
     fixture = Path(__file__).resolve().parents[1] / "fixtures" / "request.example.json"
     body = json.loads(fixture.read_text(encoding="utf-8"))
