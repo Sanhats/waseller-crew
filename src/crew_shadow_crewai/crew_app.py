@@ -305,6 +305,71 @@ def _shadow_response_from_crew_dict(data: dict[str, Any]) -> ShadowCompareRespon
     )
 
 
+def _tenant_commercial_context_redactor_note(body: ShadowCompareRequest) -> str:
+    """
+    Instrucción explícita para que el redactor priorice tenantCommercialContext / equivalentes en JSON.
+    El texto completo ya va en el payload; acá solo remarcamos prioridad.
+    """
+    top = (body.tenantCommercialContext or "").strip()
+    nested = ""
+    interp = body.interpretation if isinstance(body.interpretation, dict) else {}
+    for key in ("tenantCommercialContext", "tenantVoiceNote", "commercialContext"):
+        v = interp.get(key)
+        if isinstance(v, str) and v.strip():
+            nested = v.strip()
+            break
+    if not top and not nested:
+        return ""
+    return (
+        "\n## Contexto comercial extra del tenant (prioridad alta)\n"
+        "En el JSON hay `tenantCommercialContext` y/o notas en `interpretation` "
+        "(tenantCommercialContext / tenantVoiceNote / commercialContext): usalas como **tono, políticas, "
+        "horarios, medios de pago, envíos y límites** del negocio. No contradigan stockTable ni precios "
+        "concretos salvo que allí también aparezcan.\n\n"
+    )
+
+
+def _use_conversation_director() -> bool:
+    """Tercer agente (plan conversacional). Desactivar con CREW_SHADOW_CONVERSATION_DIRECTOR=0."""
+    raw = os.environ.get("CREW_SHADOW_CONVERSATION_DIRECTOR", "").strip().lower()
+    if not raw:
+        return True
+    return raw in ("1", "true", "yes", "on")
+
+
+_CONVERSATIONAL_FLOW_FOR_REDACTOR = """
+## Flujo conversacional (natural)
+Clasificá el turno con incomingText + recentMessages + interpretation (y conversationStage si viene):
+- **Saludo / primer contacto:** Breve, humano; si ya preguntan por producto, pasá enseguida a dato útil + un CTA.
+- **Seguimiento:** Primero lo que preguntaron (variante, cantidad, aclaración); no repitas toda la ficha si no hace falta.
+- **Objeción** (precio, desconfianza, "lo pienso"): reconocé la duda; valor según datos o alternativas en stockTable; cierre suave.
+- **Cierre / intención de compra:** Menos charla, más paso concreto (reserva, confirmar variante, link de pago); nextAction acorde.
+Si aplica más de uno, priorizá lo explícito en incomingText.
+"""
+
+
+def _director_task_description() -> str:
+    return (
+        "Analizá el contexto Waseller (JSON) del usuario (incomingText, recentMessages, interpretation, "
+        "baselineDecision, stockTable, tenantCommercialContext si existe).\n\n"
+        "Tu salida es SOLO un objeto JSON (sin markdown) con esta forma exacta:\n"
+        "{\n"
+        '  "conversationMoment": "greeting" | "follow_up" | "objection" | "closing" | "mixed",\n'
+        '  "leadTemperature": "cold" | "warm" | "hot",\n'
+        '  "tacticsForRedactor": "2 a 4 frases en español: cómo abrir, qué priorizar y cómo cerrar ESTE turno. '
+        'Sin precios, sin SKU, sin inventar stock: solo guía de tono y prioridad."\n'
+        "}\n\n"
+        "Criterios:\n"
+        "- greeting: saludo o arranque sin pedido concreto de producto.\n"
+        "- follow_up: refina variante, cantidad, o responde al mensaje anterior del asistente.\n"
+        "- objection: duda de precio, plazo, confianza, comparación, indecisión fuerte.\n"
+        "- closing: intención clara de compra o reserva.\n"
+        "- mixed: mezcla evidente; tacticsForRedactor debe ordenar qué va primero.\n"
+        "Respetá tenantCommercialContext del JSON si existe (tono y reglas del negocio).\n\n"
+        "Contexto Waseller (JSON):\n\n{context}\n"
+    )
+
+
 def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
     # Contexto completo v1 + v1.1 (opcionales omitidos si son None).
     context: dict[str, Any] = body.model_dump(mode="python", exclude_none=True)
@@ -312,64 +377,86 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
     verbose = os.environ.get("CREWAI_VERBOSE", "").lower() in ("1", "true", "yes")
 
     mission = _sales_and_stock_rules(body)
+    tenant_note = _tenant_commercial_context_redactor_note(body)
+    flow_rules = _CONVERSATIONAL_FLOW_FOR_REDACTOR
     llm = _shadow_crew_llm()
-    redactor = Agent(
-        role="Redactor de respuesta shadow Waseller",
-        goal=(
-            "Proponer una decision candidata (solo telemetría) alineada al baseline y al tenant, "
-            "sin inventar catálogo: stock y precios concretos solo si vienen en stockTable o ya "
-            "están de forma inequívoca en baseline/interpretation."
-        ),
-        backstory=(
+    use_director = _use_conversation_director()
+
+    redactor_goal = (
+        "Proponer una decision candidata (solo telemetría) alineada al baseline y al tenant, "
+        "sin inventar catálogo: stock y precios concretos solo si vienen en stockTable o ya "
+        "están de forma inequívoca en baseline/interpretation. Adaptá tono y estructura al flujo "
+        "conversacional (saludo, seguimiento, objeción, cierre)."
+    )
+    redactor_backstory = (
+        "Sos el paso de redacción del crew shadow; representás al negocio del tenant y respetás el "
+        "inventario del payload. Si hay director conversacional, su plan va antes que tu borrador; "
+        "tu salida la revisa el crítico."
+        if use_director
+        else (
             "Sos el primer paso de un crew de comparación shadow; representás al negocio del tenant "
             "y respetás el inventario enviado en el payload. Tu salida la revisa otro agente."
-        ),
+        )
+    )
+
+    redactor = Agent(
+        role="Redactor de respuesta shadow Waseller",
+        goal=redactor_goal,
+        backstory=redactor_backstory,
         verbose=verbose,
         allow_delegation=False,
         llm=llm,
     )
 
-    tarea_redactor = Task(
-        description=(
-            "Contexto Waseller (JSON):\n\n{context}\n\n"
-            f"{mission}\n"
-            "Devolvé SOLO un objeto JSON (sin markdown) con esta forma exacta:\n"
-            "{\n"
-            '  "candidateDecision": {\n'
-            '    "draftReply": "...",\n'
-            '    "intent": "...",\n'
-            '    "nextAction": "...",\n'
-            '    "recommendedAction": "...",\n'
-            '    "confidence": 0.0,\n'
-            '    "reason": "..."\n'
-            "  },\n"
-            '  "candidateInterpretation": null\n'
-            "  | {\n"
-            '      "intent": "...",\n'
-            '      "confidence": 0.0,\n'
-            '      "nextAction": "...",\n'
-            '      "source": "openai" | "rules",\n'
-            '      "conversationStage": "..."\n'
-            "    }\n"
-            "}\n"
-            "Todas las claves internas de candidateDecision son opcionales salvo las que puedas inferir.\n"
-            "candidateDecision.draftReply: string **no vacío** siempre que puedas proponer texto al lead; "
-            "no devuelvas \"\" ni null si hay baselineDecision.draftReply o datos en stockTable para armar "
-            "una respuesta coherente (Waseller modo primary). Si el lead pide **otro color/talle/modelo**, "
-            "draftReply debe ser **distinto en sustancia** al último mensaje del asistente en recentMessages "
-            "(no repitas la misma ficha).\n"
-            "candidateInterpretation: resumí la lectura del mensaje respecto al contexto; "
-            "si no aporta valor, usá null.\n"
-            f"nextAction / recommendedAction (en candidateDecision): uno de {NEXT_ACTION_ENUM_DOC}.\n"
-            f"Si incluís candidateInterpretation.nextAction: mismo conjunto.\n"
-            f"Si incluís source: solo {INTERPRETATION_SOURCE_ENUM_DOC}.\n"
-            f"Si incluís conversationStage: solo uno de {CONVERSATION_STAGE_ENUM_DOC}."
-        ),
-        expected_output="Un único objeto JSON (texto plano), sin fences ni comentarios.",
-        agent=redactor,
+    redactor_intro = (
+        "## Plan conversacional (salida del paso anterior)\n"
+        "Ya corrió el **Director conversacional**. Su JSON trae `conversationMoment`, `leadTemperature` y "
+        "`tacticsForRedactor`. Incorporalo en la **estructura y tono** de draftReply (no copies literal las "
+        "tácticas: convertilas en mensaje al lead). Si es follow_up u objection, abrí contestando eso; si "
+        "es closing, priorizá el paso concreto.\n\n"
+        if use_director
+        else ""
     )
 
-    # Agente 2: revisa y corrige solo el JSON (no re-escribe el contexto).
+    redactor_description = (
+        "Contexto Waseller (JSON):\n\n{context}\n\n"
+        f"{tenant_note}"
+        f"{redactor_intro}"
+        f"{flow_rules}\n"
+        f"{mission}\n"
+        "Devolvé SOLO un objeto JSON (sin markdown) con esta forma exacta:\n"
+        "{\n"
+        '  "candidateDecision": {\n'
+        '    "draftReply": "...",\n'
+        '    "intent": "...",\n'
+        '    "nextAction": "...",\n'
+        '    "recommendedAction": "...",\n'
+        '    "confidence": 0.0,\n'
+        '    "reason": "..."\n'
+        "  },\n"
+        '  "candidateInterpretation": null\n'
+        "  | {\n"
+        '      "intent": "...",\n'
+        '      "confidence": 0.0,\n'
+        '      "nextAction": "...",\n'
+        '      "source": "openai" | "rules",\n'
+        '      "conversationStage": "..."\n'
+        "    }\n"
+        "}\n"
+        "Todas las claves internas de candidateDecision son opcionales salvo las que puedas inferir.\n"
+        "candidateDecision.draftReply: string **no vacío** siempre que puedas proponer texto al lead; "
+        "no devuelvas \"\" ni null si hay baselineDecision.draftReply o datos en stockTable para armar "
+        "una respuesta coherente (Waseller modo primary). Si el lead pide **otro color/talle/modelo**, "
+        "draftReply debe ser **distinto en sustancia** al último mensaje del asistente en recentMessages "
+        "(no repitas la misma ficha).\n"
+        "candidateInterpretation: resumí la lectura del mensaje respecto al contexto; "
+        "si no aporta valor, usá null.\n"
+        f"nextAction / recommendedAction (en candidateDecision): uno de {NEXT_ACTION_ENUM_DOC}.\n"
+        f"Si incluís candidateInterpretation.nextAction: mismo conjunto.\n"
+        f"Si incluís source: solo {INTERPRETATION_SOURCE_ENUM_DOC}.\n"
+        f"Si incluís conversationStage: solo uno de {CONVERSATION_STAGE_ENUM_DOC}."
+    )
+
     critico = Agent(
         role="Crítico de contrato JSON Waseller",
         goal=(
@@ -384,39 +471,94 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
         allow_delegation=False,
         llm=llm,
     )
-    tarea_critico = Task(
-        description=(
-            "Recibís la salida del redactor: debe ser un JSON con "
-            '"candidateDecision" y opcionalmente "candidateInterpretation" (objeto o null).\n'
-            "Si trae texto extra o ```json, ignorá todo fuera del objeto JSON.\n"
-            "Devolvé SOLO ese objeto final, sin markdown.\n"
-            "Reglas: candidateDecision.nextAction y recommendedAction null o uno de "
-            f"{NEXT_ACTION_ENUM_DOC}.\n"
-            "No contradigas stockTable del contexto: precios/disponibilidad concretos solo si "
-            "salen de esas filas o del baseline sin inventar filas nuevas.\n"
-            "Si incomingText es aclaración (otro color, otro talle, más stock, etc.), draftReply debe "
-            "responder eso de forma **nueva**: si el redactor repitió casi igual el último mensaje del "
-            "asistente en recentMessages, **obligatorio** reemplazar draftReply: o listás otras filas de "
-            "stockTable con esa variante, o explicás que en datos **solo existe** la variante ya nombrada "
-            "y ofrecés siguiente paso (sin volver a pegar precio/stock/cierre idénticos al turno anterior).\n"
-            "draftReply no debe quedar vacío si el contexto permite al menos un borrador útil.\n"
-            "Si candidateInterpretation existe y trae nextAction, mismo conjunto.\n"
-            "Si trae source, solo "
-            f"{INTERPRETATION_SOURCE_ENUM_DOC}.\n"
-            "Si trae conversationStage, solo "
-            f"{CONVERSATION_STAGE_ENUM_DOC}."
-        ),
-        expected_output="Un único objeto JSON final, sin markdown.",
-        agent=critico,
-        context=[tarea_redactor],
+    critic_extra = (
+        "Si el crew usó director conversacional, draftReply debe sonar coherente con un turno "
+        "orientado (saludo vs cierre vs objeción) sin contradecir stockTable.\n"
+        if use_director
+        else ""
     )
-    crew = Crew(
-        agents=[redactor, critico],
-        tasks=[tarea_redactor, tarea_critico],
-        process=Process.sequential,
-        verbose=verbose,
-        tracing=False,
+    critic_description = (
+        "Recibís la salida del redactor: debe ser un JSON con "
+        '"candidateDecision" y opcionalmente "candidateInterpretation" (objeto o null).\n'
+        "Si trae texto extra o ```json, ignorá todo fuera del objeto JSON.\n"
+        "Devolvé SOLO ese objeto final, sin markdown.\n"
+        f"{critic_extra}"
+        "Reglas: candidateDecision.nextAction y recommendedAction null o uno de "
+        f"{NEXT_ACTION_ENUM_DOC}.\n"
+        "No contradigas stockTable del contexto: precios/disponibilidad concretos solo si "
+        "salen de esas filas o del baseline sin inventar filas nuevas.\n"
+        "Si incomingText es aclaración (otro color, otro talle, más stock, etc.), draftReply debe "
+        "responder eso de forma **nueva**: si el redactor repitió casi igual el último mensaje del "
+        "asistente en recentMessages, **obligatorio** reemplazar draftReply: o listás otras filas de "
+        "stockTable con esa variante, o explicás que en datos **solo existe** la variante ya nombrada "
+        "y ofrecés siguiente paso (sin volver a pegar precio/stock/cierre idénticos al turno anterior).\n"
+        "draftReply no debe quedar vacío si el contexto permite al menos un borrador útil.\n"
+        "Si candidateInterpretation existe y trae nextAction, mismo conjunto.\n"
+        "Si trae source, solo "
+        f"{INTERPRETATION_SOURCE_ENUM_DOC}.\n"
+        "Si trae conversationStage, solo "
+        f"{CONVERSATION_STAGE_ENUM_DOC}."
     )
+
+    if use_director:
+        director = Agent(
+            role="Director conversacional shadow Waseller",
+            goal=(
+                "Leer el hilo y clasificar el momento de la conversación; orientar al redactor sin "
+                "inventar inventario ni precios."
+            ),
+            backstory=(
+                "Sos el primer paso del crew: definís si el turno es saludo, seguimiento, objeción o cierre "
+                "y qué debe priorizar el mensaje al lead. No redactás la respuesta final al cliente."
+            ),
+            verbose=verbose,
+            allow_delegation=False,
+            llm=llm,
+        )
+        tarea_director = Task(
+            description=_director_task_description(),
+            expected_output="Un único objeto JSON, sin markdown ni fences.",
+            agent=director,
+        )
+        tarea_redactor = Task(
+            description=redactor_description,
+            expected_output="Un único objeto JSON (texto plano), sin fences ni comentarios.",
+            agent=redactor,
+            context=[tarea_director],
+        )
+        tarea_critico = Task(
+            description=critic_description,
+            expected_output="Un único objeto JSON final, sin markdown.",
+            agent=critico,
+            context=[tarea_redactor],
+        )
+        crew = Crew(
+            agents=[director, redactor, critico],
+            tasks=[tarea_director, tarea_redactor, tarea_critico],
+            process=Process.sequential,
+            verbose=verbose,
+            tracing=False,
+        )
+    else:
+        tarea_redactor = Task(
+            description=redactor_description,
+            expected_output="Un único objeto JSON (texto plano), sin fences ni comentarios.",
+            agent=redactor,
+        )
+        tarea_critico = Task(
+            description=critic_description,
+            expected_output="Un único objeto JSON final, sin markdown.",
+            agent=critico,
+            context=[tarea_redactor],
+        )
+        crew = Crew(
+            agents=[redactor, critico],
+            tasks=[tarea_redactor, tarea_critico],
+            process=Process.sequential,
+            verbose=verbose,
+            tracing=False,
+        )
+
     raw = crew.kickoff(inputs={"context": context_str})
     text_out = raw if isinstance(raw, str) else str(raw)
     data = _json_from_crew_output(text_out)

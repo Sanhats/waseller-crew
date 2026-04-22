@@ -226,6 +226,22 @@ def test_shadow_compare_inventory_narrowing_note(client: TestClient) -> None:
     assert r.status_code == 200
 
 
+def test_shadow_compare_accepts_tenant_commercial_context(client: TestClient) -> None:
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "request.example.json"
+    body = json.loads(fixture.read_text(encoding="utf-8"))
+    body["tenantCommercialContext"] = "Aceptamos transferencia y efectivo. Local abierto lun–sáb 9–18."
+    r = client.post("/shadow-compare", json=body)
+    assert r.status_code == 200
+
+
+def test_shadow_compare_tenant_commercial_context_max_length(client: TestClient) -> None:
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "request.example.json"
+    body = json.loads(fixture.read_text(encoding="utf-8"))
+    body["tenantCommercialContext"] = "x" * 6001
+    r = client.post("/shadow-compare", json=body)
+    assert r.status_code == 422
+
+
 def test_enrich_empty_draft_reply_from_baseline() -> None:
     from crew_shadow_crewai.crew_app import _enrich_empty_draft_reply
     from crew_shadow_crewai.models import CandidateDecision, ShadowCompareRequest, ShadowCompareResponse

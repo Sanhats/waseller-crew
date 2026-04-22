@@ -58,6 +58,14 @@ class ShadowCompareRequest(BaseModel):
         default=None,
         description="Nota opcional de Waseller sobre cómo se acotó el inventario para este request.",
     )
+    tenantCommercialContext: str | None = Field(
+        default=None,
+        max_length=6000,
+        description=(
+            "Texto libre del tenant (políticas, tono, horarios, formas de pago, envíos, límites). "
+            "Se inyecta en el prompt del redactor; no reemplaza stockTable."
+        ),
+    )
 
     @field_validator("recentMessages", mode="before")
     @classmethod
@@ -76,6 +84,14 @@ class ShadowCompareRequest(BaseModel):
         if isinstance(v, list) and len(v) > 500:
             return v[:500]
         return v
+
+    @field_validator("tenantCommercialContext", mode="after")
+    @classmethod
+    def strip_tenant_commercial_context(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
 
     @field_validator("businessProfileSlug", mode="after")
     @classmethod
