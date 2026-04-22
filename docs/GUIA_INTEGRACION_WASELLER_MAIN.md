@@ -273,7 +273,31 @@ Guardar al menos: `candidateDecision.draftReply`, `candidateDecision.nextAction`
 
 ---
 
-## 8. Ejemplos de body completo por rubro
+## 8. Derivación, negación al cierre y catálogo (crew + qué hacer en main)
+
+waseller-crew ajustó **prompt** y **guards** post-LLM para estos casos:
+
+| Situación | `nextAction` típico en la respuesta candidata | Comportamiento esperado del mensaje al lead |
+|-----------|-----------------------------------------------|-----------------------------------------------|
+| El lead pide **asesor / persona / derivación** | `handoff_human` | Confirmar derivación **sin** repetir la ficha ni insistir con reserva; invitar a seguir explorando el catálogo con criterios (rubro, nombre, palabras clave), honesto respecto al subconjunto enviado en `stockTable`. |
+| El lead **niega** la reserva o el cierre (“no”, “no gracias”, etc.) y el borrador seguía empujando reserva | `reply_only` (o el que defina el merge) | **No** repetir el mismo “¿te reservo?”; respuesta breve + invitación a seguir el catálogo con búsqueda; sin inventar productos fuera de `stockTable`. |
+
+**Variables de entorno opcionales en waseller-crew** (por defecto activas): `CREW_SHADOW_HANDOFF_REQUEST_GUARD`, `CREW_SHADOW_NEGATION_FOLLOWUP_GUARD`. Solo hace falta tocarlas si querés desactivar el comportamiento en un entorno de prueba.
+
+### Texto listo para pegar en un issue/PR de Waseller main
+
+> **Integración shadow-compare / waseller-crew:** el crew ya devuelve `handoff_human` cuando el mensaje del lead pide hablar con un asesor o derivación, y refuerza el corte cuando el lead niega el cierre y el modelo insistía con la misma reserva. **En main no hace falta cambiar el contrato HTTP** si ya envían `incomingText`, `recentMessages` (últimos 8) y `stockTable` como en esta guía.
+>
+> **Sí conviene revisar en main:**
+> 1. **Consumo de `nextAction` / `recommendedAction`:** si Waseller hoy ignora `handoff_human` y siempre manda la respuesta candidata como mensaje automático, alinear la lógica para que **`handoff_human` dispare** la cola o flujo de **contacto humano** (o marque el lead para operador), en lugar de tratarlo como un mensaje de venta más.
+> 2. **Merge baseline vs candidata:** si al comparar o elegir respuesta se prioriza siempre el baseline cuando la candidata pide handoff, evaluar **dar prioridad a la candidata** cuando `nextAction === "handoff_human"` o cuando el texto del lead matchea pedido explícito de asesor.
+> 3. **Telemetría:** registrar en logs/analytics el par `(nextAction, recommendedAction)` de la respuesta aplicada al lead para medir cuántos pedidos de derivación se cumplen end-to-end.
+
+Si no tocan nada de lo anterior, el texto al lead igual mejora porque el **cuerpo del mensaje** ya viene alineado; el riesgo es que **operación** (derivar a humano) no se ejecute si main no interpreta `handoff_human`.
+
+---
+
+## 9. Ejemplos de body completo por rubro
 
 ### Indumentaria y calzado
 
@@ -355,7 +379,7 @@ Guardar al menos: `candidateDecision.draftReply`, `candidateDecision.nextAction`
 
 ---
 
-## 9. Contacto y coordinación
+## 10. Contacto y coordinación
 
 Para agregar un rubro nuevo, reportar un problema con la respuesta del agente o ajustar la guía de ventas de un tenant específico, coordinar con el equipo de waseller-crew indicando:
 

@@ -179,10 +179,17 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         "- **Urgencia y escasez (natural):** Si una fila de stockTable tiene `availableStock` o `stock` "
         "entre 1 y 3, podés mencionarlo de forma natural ('quedan pocas unidades', 'son las últimas que "
         "tengo en ese talle') para motivar la decisión. No exageres ni inventes cantidades fuera del dato.\n"
-        "- **Cierre activo:** Cuando el producto está disponible y el lead muestra interés, **siempre** "
-        "terminá con una pregunta de cierre o CTA: '¿Te lo reservo?', '¿Armamos el pedido?', "
+        "- **Cierre activo:** Cuando el producto está disponible y el lead muestra interés, **terminá** "
+        "con una pregunta de cierre o CTA: '¿Te lo reservo?', '¿Armamos el pedido?', "
         "'¿Querés que lo aparte?'. Usá nextAction `offer_reservation` o `reserve_stock` según el caso. "
-        "No termines el mensaje sin un paso concreto propuesto.\n"
+        "No termines el mensaje sin un paso concreto propuesto **salvo** que aplique la excepción siguiente.\n"
+        "- **Excepción — derivación o negativa al cierre:** Si el lead pide **asesor**, **persona humana** "
+        "o **derivación**, o **rechaza** la reserva o la pregunta de cierre ('no', 'no gracias', 'no quiero', "
+        "etc.): **no** repitas la misma ficha de producto ni el mismo CTA de reserva. En derivación usá "
+        "`handoff_human` y `recommendedAction` acorde; en rechazo claro usá `reply_only` o `ask_clarification`. "
+        "Cerrá con **invitación a seguir explorando el catálogo**: pedí rubro, nombre o palabras clave; si en "
+        "stockTable hay **otras filas** distintas, podés mencionar que en este envío hay más líneas para que "
+        "elija; **no inventes** productos fuera de la tabla.\n"
         "- **Cross-sell:** Si el producto exacto no está en stockTable pero hay alternativas similares "
         "(mismo rubro, precio cercano, otro color/talle disponible), ofrecelas con nombre y precio real. "
         "Usá `suggest_alternative` y listá máximo 2 opciones concretas de stockTable.\n"
@@ -399,7 +406,8 @@ Clasificá el turno con **incomingText + recentMessages + interpretation** (y co
 - **Seguimiento:** Primero lo que preguntaron (variante, cantidad, aclaración); no repitas toda la ficha si no hace falta.
 - **Objeción** (precio, desconfianza, "lo pienso"): reconocé la duda; valor según datos o alternativas en stockTable; cierre suave.
 - **Cierre / intención de compra:** Menos charla, más paso concreto (reserva, confirmar variante, link de pago); nextAction acorde.
-- **Rechazo o “no”:** Respetá la negativa sin insistir con la misma ficha; ofrecé otra línea de ayuda según datos o pedí criterio.
+- **Rechazo o “no”** (a la reserva o a la pregunta que le hicimos): sin insistir ni repetir el mismo cierre; invitá con tono abierto a **seguir viendo el catálogo** (pedí rubro, producto o palabras clave; si hay más filas en stockTable, orientá sin inventar).
+- **Derivación / asesor humano:** Reconocé el pedido, `handoff_human` si corresponde, sin volver a empujar la misma reserva; podés combinar con invitación suave a seguir explorando el catálogo con criterios de búsqueda (sin inventar fuera de stockTable).
 - **Cambio de tema / catálogo / “qué más tenés”:** Aclará alcance del inventario enviado y pedí criterio si hace falta; no inventes catálogo.
 - **Mensaje ambiguo o multitema:** Una frase de aclaración o priorizá lo más urgente; pedí un solo dato si falta para avanzar.
 - **Cortesía o charla lateral breve:** Respondé en una línea y volvé al paso de venta sin alargar.
@@ -424,6 +432,10 @@ def _director_task_description() -> str:
         "- objection: duda de precio, plazo, confianza, comparación, indecisión fuerte.\n"
         "- closing: intención clara de compra o reserva.\n"
         "- mixed: mezcla evidente; tacticsForRedactor debe ordenar qué va primero.\n"
+        "- Si incomingText pide **asesor/persona**/derivación o es **negativa** clara al cierre previo "
+        "(no / no gracias / no quiero reservar): tacticsForRedactor debe priorizar **no insistir** con la "
+        "misma ficha ni el mismo CTA de reserva; invitación breve a seguir el catálogo con criterios de búsqueda, "
+        "sin inventar inventario.\n"
         "- Si `interpretation` trae intent o entidades distintos del tono superficial del mensaje, "
         "reflejalo en tacticsForRedactor (Waseller ya hizo una lectura; integrala con el hilo).\n"
         "- Mensaje ambiguo o multitema: usá mixed y ordená en tactics: primero empatía o aclaración, "
@@ -560,6 +572,9 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
         "asistente en recentMessages, **obligatorio** reemplazar draftReply: o listás otras filas de "
         "stockTable con esa variante, o explicás que en datos **solo existe** la variante ya nombrada "
         "y ofrecés siguiente paso (sin volver a pegar precio/stock/cierre idénticos al turno anterior).\n"
+        "Si incomingText pide **asesor/derivación** o es **negativa** clara a reserva/cierre: draftReply **no** "
+        "debe repetir la misma confirmación de producto ni el mismo '¿te reservo?'; priorizá handoff o cierre "
+        "breve que invite a seguir el catálogo según las reglas del rol (sin inventar fuera de stockTable).\n"
         "draftReply no debe quedar vacío si el contexto permite al menos un borrador útil.\n"
         "Si el JSON trae `interpretation` con intención o entidades, el borrador debe ser **coherente** "
         "con esa lectura siempre que no contradiga stockTable ni invente datos.\n"

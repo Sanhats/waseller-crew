@@ -294,6 +294,81 @@ def test_variant_regex_matches_en_que_color_tenes() -> None:
     assert incoming_asks_variant_clarification("que color tendrias?") is True
 
 
+def test_handoff_request_guard_sets_human_and_reply() -> None:
+    from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards
+    from crew_shadow_crewai.models import (
+        CandidateDecision,
+        ShadowCompareRequest,
+        ShadowCompareResponse,
+    )
+
+    pitch = "Te confirmo Mesa de algarrobo: precio $195.000 y 2 unidad(es) disponibles. ¿Querés que te reserve una?"
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="preferiría que me derive con el asesor para más información",
+        interpretation={},
+        baselineDecision={},
+        stockTable=[{"name": "Mesa algarrobo", "stock": 2}],
+    )
+    resp = ShadowCompareResponse(
+        candidateDecision=CandidateDecision(
+            draftReply=pitch,
+            nextAction="offer_reservation",
+            recommendedAction="offer_reservation",
+        )
+    )
+    out = apply_followup_draft_guards(body, resp)
+    assert out.candidateDecision is not None
+    assert out.candidateDecision.nextAction == "handoff_human"
+    assert out.candidateDecision.recommendedAction == "handoff_human"
+    dr = out.candidateDecision.draftReply or ""
+    assert dr != pitch
+    assert "asesor" in dr.lower()
+    assert "catálogo" in dr.lower()
+    assert "handoff_request_guard" in (out.candidateDecision.reason or "")
+
+
+def test_negation_followup_guard_on_pushy_reservation_without_recent_dup() -> None:
+    from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards
+    from crew_shadow_crewai.models import (
+        CandidateDecision,
+        ShadowCompareRequest,
+        ShadowCompareResponse,
+    )
+
+    pitch = (
+        "Te confirmo Mesa de algarrobo: precio $195.000 y 2 unidad(es) disponibles. "
+        "¿Querés que te reserve una ahora?"
+    )
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="no, gracias",
+        interpretation={},
+        baselineDecision={},
+        stockTable=[{"name": "Mesa algarrobo", "stock": 2}],
+    )
+    resp = ShadowCompareResponse(
+        candidateDecision=CandidateDecision(
+            draftReply=pitch,
+            nextAction="offer_reservation",
+            recommendedAction="offer_reservation",
+        )
+    )
+    out = apply_followup_draft_guards(body, resp)
+    assert out.candidateDecision is not None
+    dr = out.candidateDecision.draftReply or ""
+    assert dr != pitch
+    assert "negation_followup_guard" in (out.candidateDecision.reason or "")
+    assert out.candidateDecision.nextAction == "reply_only"
+    assert "catálogo" in dr.lower()
+
+
 def test_negation_followup_guard_rewrites_duplicate() -> None:
     from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards
     from crew_shadow_crewai.models import (

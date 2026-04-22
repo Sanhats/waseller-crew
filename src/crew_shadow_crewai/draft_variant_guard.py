@@ -312,6 +312,96 @@ def build_misc_followup_dedupe_reply(incoming: str) -> str:
     )
 
 
+_HANDOFF_ASK_RE = re.compile(
+    r"(?:"
+    r"\bderiv"
+    r"|\basesor\b"
+    r"|\batenci[oó]n\s+humana\b"
+    r"|\bhablar\s+con\s+(?:un\s+|una\s+|el\s+|la\s+)?(?:asesor|persona|alguien|representante|vendedor)\b"
+    r"|\b(?:que|qu[eé])\s+me\s+(?:atienda|contacte|llame|deriven)\b"
+    r"|\b(?:necesito|quiero|prefiero)\s+(?:hablar|charlar|que\s+me\s+atienda)\b"
+    r"|\bpersona\s+real\b"
+    r"|\b(?:pasame|pásame|comunicame|poneme)\s+con\b"
+    r"|\b(?:me\s+)?(?:comuniquen|comuniqués)\s+con\b"
+    r")",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def incoming_requests_human_handoff(text: str) -> bool:
+    """Lead pide explícitamente asesor humano / derivación."""
+    return bool(_HANDOFF_ASK_RE.search((text or "").strip()))
+
+
+def _draft_acknowledges_handoff(draft: str) -> bool:
+    d = _fold(draft)
+    return any(
+        x in d
+        for x in (
+            "asesor del equipo",
+            "te derivo",
+            "te derivamos",
+            "derivamos tu consulta",
+            "contacto con un asesor",
+            "hablar con alguien del equipo",
+            "handoff_human",
+        )
+    )
+
+
+def build_handoff_followup_reply() -> str:
+    return (
+        "Listo, derivamos tu consulta para que un asesor del equipo te responda por este mismo canal "
+        "con lo que necesitás. Si mientras tanto querés seguir viendo opciones del catálogo, decime qué "
+        "buscás (rubro, producto o palabras clave) y en el próximo paso cruzo con las filas que figuren "
+        "en el inventario cargado en este turno, sin inventar fuera de la tabla."
+    )
+
+
+def apply_handoff_request_guard(
+    body: ShadowCompareRequest,
+    resp: ShadowCompareResponse,
+) -> ShadowCompareResponse:
+    """
+    Lead pide derivación / asesor humano: no repetir ficha de producto; fijar handoff_human.
+    """
+    if not _env_guard_enabled("CREW_SHADOW_HANDOFF_REQUEST_GUARD", default=True):
+        return resp
+    cd = resp.candidateDecision
+    if cd is None:
+        return resp
+    draft = (cd.draftReply or "").strip()
+    if not draft:
+        return resp
+    inc = (body.incomingText or "").strip()
+    if not inc or not incoming_requests_human_handoff(inc):
+        return resp
+    if _draft_acknowledges_handoff(draft):
+        return resp
+    new_text = build_handoff_followup_reply()
+    prev_reason = (cd.reason or "").strip()
+    new_reason = "handoff_request_guard" if not prev_reason else f"{prev_reason}|handoff_request_guard"
+    log.info(
+        structured_log_line(
+            "shadow_compare_handoff_request_guard_applied",
+            tenant_id=body.tenantId,
+            lead_id=body.leadId,
+            correlation_id=body.correlationId,
+        )
+    )
+    return ShadowCompareResponse(
+        candidateDecision=cd.model_copy(
+            update={
+                "draftReply": new_text[:2000],
+                "reason": new_reason[:500],
+                "nextAction": "handoff_human",
+                "recommendedAction": "handoff_human",
+            }
+        ),
+        candidateInterpretation=resp.candidateInterpretation,
+    )
+
+
 def apply_multi_variant_list_guard(
     body: ShadowCompareRequest,
     resp: ShadowCompareResponse,
@@ -449,6 +539,7 @@ _NEGATION_DUPLICATE_RE = re.compile(
     r"|\bno\s+quiero\b"
     r"|\bno\s+me\s+interesa\b"
     r"|\bno\s+gracias\b"
+    r"|\bno\s*,\s*gracias\b"
     r")",
     re.IGNORECASE | re.UNICODE,
 )
@@ -459,10 +550,29 @@ def incoming_suggests_stop_or_rejection(text: str) -> bool:
     return bool(_NEGATION_DUPLICATE_RE.search((text or "").strip()))
 
 
+def _is_pushy_reservation_pitch(draft: str) -> bool:
+    """Borrador que sigue empujando reserva / repite confirmación de producto."""
+    d = _fold(draft)
+    return any(
+        x in d
+        for x in (
+            "te confirmo",
+            "queres que te reserve",
+            "queres que te reserv",
+            "te reservo",
+            "te reserve una",
+            "te reservo una",
+            "reservamos",
+            "reservo una",
+        )
+    )
+
+
 def build_negation_followup_reply() -> str:
     return (
-        "Dale, lo dejamos ahí entonces. Si más adelante buscás otra cosa, decime qué rubro o producto "
-        "y veo qué aparece en el inventario que tengo cargado en este turno (sin inventar fuera de la tabla)."
+        "Dale, lo dejamos sin reserva. Si querés seguir viendo el catálogo, cuando tengas otra idea "
+        "pasame nombre, rubro o palabras clave y reviso qué aparece en el inventario que tengo cargado "
+        "en este turno (sin inventar fuera de la tabla)."
     )
 
 
@@ -484,8 +594,10 @@ def apply_negation_followup_guard(
         return resp
     if incoming_asks_catalog_or_broader_products(inc):
         return resp
+    if incoming_requests_human_handoff(inc):
+        return resp
     dup, _, _ = _duplicate_vs_recent(draft, body)
-    if not dup:
+    if not dup and not _is_pushy_reservation_pitch(draft):
         return resp
     new_text = build_negation_followup_reply()
     prev_reason = (cd.reason or "").strip()
@@ -500,7 +612,12 @@ def apply_negation_followup_guard(
     )
     return ShadowCompareResponse(
         candidateDecision=cd.model_copy(
-            update={"draftReply": new_text[:2000], "reason": new_reason[:500]}
+            update={
+                "draftReply": new_text[:2000],
+                "reason": new_reason[:500],
+                "nextAction": "reply_only",
+                "recommendedAction": "reply_only",
+            }
         ),
         candidateInterpretation=resp.candidateInterpretation,
     )
@@ -643,6 +760,7 @@ def apply_followup_draft_guards(
     resp: ShadowCompareResponse,
 ) -> ShadowCompareResponse:
     """Cadena de salvaguardas post-LLM (orden importa)."""
+    resp = apply_handoff_request_guard(body, resp)
     resp = apply_multi_variant_list_guard(body, resp)
     resp = apply_variant_followup_guard(body, resp)
     resp = apply_negation_followup_guard(body, resp)
