@@ -26,7 +26,7 @@ from crew_shadow_crewai.constants import (
     INTERPRETATION_SOURCE_ENUM_DOC,
     NEXT_ACTION_ENUM_DOC,
 )
-from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards
+from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards, public_catalog_full_url
 from crew_shadow_crewai.models import (
     CandidateDecision,
     CandidateInterpretation,
@@ -190,7 +190,9 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         "`handoff_human` y `recommendedAction` acorde; en rechazo claro usá `reply_only` o `ask_clarification`. "
         "Cerrá con **invitación a seguir explorando el catálogo**: pedí rubro, nombre o palabras clave; si en "
         "stockTable hay **otras filas** distintas, podés mencionar que en este envío hay más líneas para que "
-        "elija; **no inventes** productos fuera de la tabla.\n"
+        "elija; **no inventes** productos fuera de la tabla. Si el JSON trae `publicCatalogSlug` y "
+        "`publicCatalogBaseUrl`, el catálogo público en la web es `{publicCatalogBaseUrl}/tienda/{publicCatalogSlug}` "
+        "(misma regla que la app); si solo viene el slug, referí la ruta /tienda/{slug} sin inventar el dominio.\n"
         "- **Cross-sell:** Si el producto exacto no está en stockTable pero hay alternativas similares "
         "(mismo rubro, precio cercano, otro color/talle disponible), ofrecelas con nombre y precio real. "
         "Usá `suggest_alternative` y listá máximo 2 opciones concretas de stockTable.\n"
@@ -374,6 +376,38 @@ def _interpretation_priority_banner(body: ShadowCompareRequest) -> str:
     )
 
 
+def _public_catalog_prompt_note(body: ShadowCompareRequest) -> str:
+    """Instrucción explícita para usar catálogo público (slug + origen) sin inventar URLs."""
+    slug = body.publicCatalogSlug
+    base = body.publicCatalogBaseUrl
+    if not slug and not base:
+        return ""
+    url = public_catalog_full_url(body)
+    lines: list[str] = [
+        "\n## Catálogo público de la tienda (Waseller)\n",
+        "En el JSON pueden venir **`publicCatalogSlug`** (columna `public.tenants.public_catalog_slug` / "
+        "Prisma `Tenant.publicCatalogSlug`) y opcionalmente **`publicCatalogBaseUrl`** (origen HTTPS del "
+        "storefront **sin** barra final, equivalente a `window.location.origin` en la app).\n",
+    ]
+    if url:
+        lines.append(f"**URL armada** (copiar tal cual al lead, sin modificar): `{url}`.\n")
+    elif slug:
+        lines.append(
+            f"**Solo slug:** la ruta pública es **/tienda/{slug}**; el enlace completo es `{{origen}}/tienda/{slug}` "
+            "— no inventes el origen si no viene `publicCatalogBaseUrl`.\n"
+        )
+    else:
+        lines.append(
+            "**Solo origen:** sin `publicCatalogSlug` no armes la URL del catálogo; no inventes el segmento.\n"
+        )
+    lines.append(
+        "Si el lead **rechaza** lo ofrecido o pide **derivación**, cerrá con tono conclusivo e invitá a seguir "
+        "el **catálogo público** (lo que van cargando) usando el enlace o la regla anterior **solo** si están "
+        "en el JSON.\n\n"
+    )
+    return "".join(lines)
+
+
 def _tenant_commercial_context_redactor_note(body: ShadowCompareRequest) -> str:
     """
     Instrucción explícita para que el redactor priorice tenantCommercialContext / equivalentes en JSON.
@@ -413,8 +447,8 @@ Clasificá el turno con **incomingText + recentMessages + interpretation** (y co
 - **Seguimiento:** Primero lo que preguntaron (variante, cantidad, aclaración); no repitas toda la ficha si no hace falta.
 - **Objeción** (precio, desconfianza, "lo pienso"): reconocé la duda; valor según datos o alternativas en stockTable; cierre suave.
 - **Cierre / intención de compra:** Menos charla, más paso concreto (reserva, confirmar variante, link de pago); nextAction acorde.
-- **Rechazo o “no”** (a la reserva o a la pregunta que le hicimos): sin insistir ni repetir el mismo cierre; invitá con tono abierto a **seguir viendo el catálogo** (pedí rubro, producto o palabras clave; si hay más filas en stockTable, orientá sin inventar).
-- **Derivación / asesor humano:** Reconocé el pedido, `handoff_human` si corresponde, sin volver a empujar la misma reserva; podés combinar con invitación suave a seguir explorando el catálogo con criterios de búsqueda (sin inventar fuera de stockTable).
+- **Rechazo o “no”** (a la reserva o a la pregunta que le hicimos): sin insistir ni repetir el mismo cierre; tono **conclusivo** e invitación a seguir el **catálogo público**; si el JSON trae `publicCatalogSlug` y `publicCatalogBaseUrl`, podés pasar el enlace `{publicCatalogBaseUrl}/tienda/{publicCatalogSlug}` (sin inventar dominio ni slug).
+- **Derivación / asesor humano:** Reconocé el pedido, `handoff_human` si corresponde, sin volver a empujar la misma reserva; podés combinar con invitación al catálogo público cuando vengan slug/origen en el JSON (sin inventar fuera de stockTable).
 - **Cambio de tema / catálogo / “qué más tenés”:** Aclará alcance del inventario enviado y pedí criterio si hace falta; no inventes catálogo.
 - **Mensaje ambiguo o multitema:** Una frase de aclaración o priorizá lo más urgente; pedí un solo dato si falta para avanzar.
 - **Cortesía o charla lateral breve:** Respondé en una línea y volvé al paso de venta sin alargar.
@@ -462,6 +496,7 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
     interp_banner = _interpretation_priority_banner(body)
     negotiation_block = _waseller_negotiation_context_block(body)
     tenant_note = _tenant_commercial_context_redactor_note(body)
+    catalog_note = _public_catalog_prompt_note(body)
     flow_rules = _CONVERSATIONAL_FLOW_FOR_REDACTOR
     llm = _shadow_crew_llm()
     use_director = _use_conversation_director()
@@ -508,6 +543,7 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
         f"{interp_banner}"
         f"{negotiation_block}"
         f"{tenant_note}"
+        f"{catalog_note}"
         f"{redactor_intro}"
         f"{flow_rules}\n"
         f"{mission}\n"

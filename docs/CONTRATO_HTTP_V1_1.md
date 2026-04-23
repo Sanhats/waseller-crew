@@ -25,10 +25,12 @@ Alineados al documento Waseller (mismos nombres y semántica).
 | `etapa` | `string` | Opcional (≤500). Etapa / fase del embudo. |
 | `activeOffer` | `object` | Opcional. Dict flexible: última oferta (producto, precio, texto del asistente, etc.). |
 | `memoryFacts` | `string[]` | Opcional. Hasta **40** strings (≤400 chars c/u); hechos recordados del lead. |
+| `publicCatalogSlug` | `string` | Opcional (≤128). Slug del catálogo público (`public.tenants.public_catalog_slug` / Prisma `Tenant.publicCatalogSlug`). Patrón seguro: `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`. Si es inválido, el crew lo ignora. |
+| `publicCatalogBaseUrl` | `string` | Opcional (≤512). Origen del storefront **sin** barra final (`https://…`). Con `publicCatalogSlug` válido, el enlace literal es **`publicCatalogBaseUrl + "/tienda/" + publicCatalogSlug`** (igual que en la app). En Waseller main puede obtenerse vía **`resolvePublicCatalogBaseUrlForCrew()`** (API exportada para reutilizar o testear). Si es inválido, el crew lo ignora. |
 
 **Endpoints:** `POST /shadow-compare` y alias **`POST /v1/shadow-compare`** (mismo handler, misma validación Pydantic y misma auth).
 
-**Campos futuros en el body:** `ShadowCompareRequest` usa `extra = "ignore"`: claves nuevas que aún no estén en el modelo no rompen el POST (se descartan del modelo interno).
+**Campos extra / cliente Waseller:** En **waseller-crew**, `ShadowCompareRequest` usa `extra = "ignore"`: claves que el crew aún no modela no rompen el POST. En **Waseller**, el cliente del shadow-compare puede seguir con `extra = "ignore"` hasta extender su modelo con `publicCatalogSlug` y `publicCatalogBaseUrl`; cuando los envíen, el enlace pegable al catálogo público es la concatenación **`publicCatalogBaseUrl + "/tienda/" + publicCatalogSlug`** (sin barra de más al final de la base).
 
 **Respuesta (modo primary / parseo Waseller):** `candidateDecision` con `draftReply` **string no vacío** cuando el baseline trae borrador: si el LLM devuelve `draftReply` vacío, el servicio **rellena desde** `baselineDecision.draftReply` y deja traza `shadow_compare_empty_draft_filled_from_baseline` en logs. `nextAction` / `recommendedAction` siguen el enum Waseller (coerción a `null` si viene inválido).
 

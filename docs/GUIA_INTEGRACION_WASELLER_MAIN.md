@@ -123,6 +123,29 @@ Estos campos **no son opcionales en la práctica**: sin ellos el agente trabaja 
 - Se usan para correlacionar logs entre Waseller y waseller-crew.
 - Recomendados para debugging en producción. No afectan la calidad de la respuesta.
 
+#### `publicCatalogSlug` y `publicCatalogBaseUrl` — enlace al catálogo público
+
+En base de datos el segmento del path viene de **`public.tenants.public_catalog_slug`** (Prisma: `Tenant.publicCatalogSlug`). El enlace literal que debe recibir el lead (y que usa waseller-crew al armar el texto) es:
+
+**`publicCatalogBaseUrl + "/tienda/" + publicCatalogSlug`**
+
+con `publicCatalogBaseUrl` **sin** barra final (misma convención que en Stock: `window.location.origin` + `"/tienda/"` + slug).
+
+**En Waseller (monorepo main):** quedó exportada **`resolvePublicCatalogBaseUrlForCrew()`** para resolver el origen del storefront de forma centralizada; podés reutilizarla o testearla al construir el body del POST.
+
+**Modelo cliente en Waseller:** pueden seguir usando **`extra = "ignore"`** (o equivalente) hasta que agreguen `publicCatalogSlug` y `publicCatalogBaseUrl` al modelo Pydantic/TypeScript del payload; mientras no los envíen, waseller-crew igual acepta el POST y solo no tendrá enlace explícito en los cierres de catálogo. **waseller-crew** ya valida estos campos en su `ShadowCompareRequest` y sigue con `extra = "ignore"` para cualquier otra clave futura.
+
+Enviá ambos campos cuando el worker tenga slug + origen:
+
+```json
+"publicCatalogSlug": "mi-tienda-ejemplo",
+"publicCatalogBaseUrl": "https://app.midominio.com"
+```
+
+- **Por qué importa:** en rechazos (“no gracias”) o derivación a asesor, el crew puede **cerrar con tono conclusivo** e **invitar al lead** al catálogo público con ese **enlace pegable**.
+- Si solo enviás **`publicCatalogSlug`**, el texto puede mencionar la ruta `/tienda/{slug}` sin inventar el dominio.
+- Slug y URL base se validan en el crew (caracteres seguros, `http(s)://` para la base). Valores inválidos se **descartan** sin fallar el POST.
+
 ---
 
 ## 3. Configuración de `businessProfileSlug` por tenant
@@ -260,7 +283,7 @@ Guardar al menos: `candidateDecision.draftReply`, `candidateDecision.nextAction`
 - [ ] `stockTable` se envía filtrado (solo variantes relevantes con stock > 0)
 - [ ] `businessProfileSlug` se envía con el slug del rubro del tenant
 - [ ] `inventoryNarrowingNote` se incluye cuando el inventario fue filtrado
-- [ ] Opcionales alineados al contrato: `tenantCommercialContext`, `tenantBrief`, `etapa`, `activeOffer`, `memoryFacts` (ver `docs/CONTRATO_HTTP_V1_1.md` y `docs/integrations/waseller-crew/README.md`)
+- [ ] Opcionales alineados al contrato: `tenantCommercialContext`, `tenantBrief`, `etapa`, `activeOffer`, `memoryFacts`, `publicCatalogSlug`, `publicCatalogBaseUrl` (catálogo público `/tienda/{slug}`; ver `docs/CONTRATO_HTTP_V1_1.md` y `docs/integrations/waseller-crew/README.md`)
 
 ### Configuración por tenant
 - [ ] Cada tenant tiene asignado su `businessProfileSlug` en Waseller

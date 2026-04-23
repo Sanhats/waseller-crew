@@ -11,6 +11,7 @@
 1. **Body alineado al contrato** — Enviar todo el contexto que use el LLM:
    - `recentMessages`, `interpretation`, `baselineDecision`, `stockTable`, `inventoryNarrowingNote`
    - `tenantCommercialContext` y/o **`tenantBrief`**, **`etapa`**, **`activeOffer`**, **`memoryFacts`** (opcionales; se inyectan al prompt cuando vienen)
+   - **`publicCatalogSlug`** y **`publicCatalogBaseUrl`** (opcionales; enlace literal `publicCatalogBaseUrl + "/tienda/" + publicCatalogSlug`; en main: `resolvePublicCatalogBaseUrlForCrew()` para la base)
    - `businessProfileSlug`, `correlationId`, etc. según [`CONTRATO_HTTP_V1_1.md`](../../CONTRATO_HTTP_V1_1.md)
 
 2. **Respuesta** — JSON con `candidateDecision.draftReply` **no vacío** (y `intent` / `confidence` / `nextAction` coherentes) para que Waseller haga merge y reemplace el baseline cuando corresponda. Si el crew falla o el borrador queda vacío, el servicio puede rellenar desde baseline (ver logs `shadow_compare_empty_draft_*`).

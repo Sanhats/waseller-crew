@@ -161,6 +161,38 @@ def incoming_asks_catalog_or_broader_products(text: str) -> bool:
     return bool(_CATALOG_ASK_RE.search((text or "").strip()))
 
 
+def public_catalog_full_url(body: ShadowCompareRequest) -> str | None:
+    """`{publicCatalogBaseUrl}/tienda/{publicCatalogSlug}` si ambos vienen válidos."""
+    slug = body.publicCatalogSlug
+    base = body.publicCatalogBaseUrl
+    if not slug or not base:
+        return None
+    return f"{base}/tienda/{slug}"
+
+
+def build_public_catalog_invite_sentence(body: ShadowCompareRequest) -> str:
+    """
+    Invitación al catálogo público (origen + /tienda/ + slug, alineado a Tenant.publicCatalogSlug).
+    """
+    url = public_catalog_full_url(body)
+    slug = body.publicCatalogSlug
+    if url:
+        return (
+            "El catálogo público de la tienda se va actualizando con lo que van cargando; "
+            f"podés seguir mirando y eligiendo por acá: {url}"
+        )
+    if slug:
+        return (
+            f"El catálogo público se publica en la web en la ruta /tienda/{slug} "
+            "(en la app se arma con el origen del sitio, por ejemplo en Stock, + /tienda/ + ese identificador), "
+            "y ahí entra lo que van sumando al catálogo."
+        )
+    return (
+        "Seguí el catálogo público desde la tienda online del negocio para ver lo que se publica "
+        "con el tiempo."
+    )
+
+
 def total_stock_units(rows: list[dict[str, Any]]) -> int:
     """Suma por fila un único valor numérico de stock (primera clave reconocida)."""
     total = 0
@@ -349,13 +381,14 @@ def _draft_acknowledges_handoff(draft: str) -> bool:
     )
 
 
-def build_handoff_followup_reply() -> str:
+def build_handoff_followup_reply(body: ShadowCompareRequest) -> str:
+    catalog = build_public_catalog_invite_sentence(body)
     return (
         "Listo, derivamos tu consulta para que un asesor del equipo te responda por este mismo canal "
-        "con lo que necesitás. Si mientras tanto querés seguir viendo opciones del catálogo, decime qué "
-        "buscás (rubro, producto o palabras clave) y en el próximo paso cruzo con las filas que figuren "
-        "en el inventario cargado en este turno, sin inventar fuera de la tabla."
-    )
+        f"con lo que necesitás. {catalog} "
+        "Si mientras tanto querés que busque algo por inventario interno, decime rubro, producto "
+        "o palabras clave y cruzo con las filas de este turno, sin inventar fuera de la tabla."
+    )[:2000]
 
 
 def apply_handoff_request_guard(
@@ -378,7 +411,7 @@ def apply_handoff_request_guard(
         return resp
     if _draft_acknowledges_handoff(draft):
         return resp
-    new_text = build_handoff_followup_reply()
+    new_text = build_handoff_followup_reply(body)
     prev_reason = (cd.reason or "").strip()
     new_reason = "handoff_request_guard" if not prev_reason else f"{prev_reason}|handoff_request_guard"
     log.info(
@@ -579,12 +612,15 @@ def _is_pushy_reservation_pitch(draft: str) -> bool:
     )
 
 
-def build_negation_followup_reply() -> str:
+def build_negation_followup_reply(body: ShadowCompareRequest) -> str:
+    catalog = build_public_catalog_invite_sentence(body)
     return (
-        "Dale, lo dejamos sin reserva. Si querés seguir viendo el catálogo, cuando tengas otra idea "
-        "pasame nombre, rubro o palabras clave y reviso qué aparece en el inventario que tengo cargado "
-        "en este turno (sin inventar fuera de la tabla)."
-    )
+        "Perfecto, lo dejamos acá entonces — cerramos esta propuesta sin insistencia. "
+        f"{catalog} "
+        "Por este mismo canal también podés decirme si buscás otra cosa concreta "
+        "(nombre, rubro o palabras clave) y reviso el inventario que tenga cargado en el turno, "
+        "sin inventar fuera de la tabla."
+    )[:2000]
 
 
 def apply_negation_followup_guard(
@@ -610,7 +646,7 @@ def apply_negation_followup_guard(
     dup, _, _ = _duplicate_vs_recent(draft, body)
     if not dup and not _is_pushy_reservation_pitch(draft):
         return resp
-    new_text = build_negation_followup_reply()
+    new_text = build_negation_followup_reply(body)
     prev_reason = (cd.reason or "").strip()
     new_reason = "negation_followup_guard" if not prev_reason else f"{prev_reason}|negation_followup_guard"
     log.info(

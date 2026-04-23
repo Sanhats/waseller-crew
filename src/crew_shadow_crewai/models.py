@@ -84,6 +84,23 @@ class ShadowCompareRequest(BaseModel):
         default=None,
         description="Hechos recordados sobre el lead (Waseller; lista corta de strings).",
     )
+    publicCatalogSlug: str | None = Field(
+        default=None,
+        max_length=128,
+        description=(
+            "Slug del catálogo público (DB `public.tenants.public_catalog_slug`; Prisma `Tenant.publicCatalogSlug`). "
+            "La URL en la app suele ser `{origen}/tienda/{slug}`."
+        ),
+    )
+    publicCatalogBaseUrl: str | None = Field(
+        default=None,
+        max_length=512,
+        description=(
+            "Origen del storefront **sin** barra final (p. ej. `https://mi-dominio.app`). "
+            "Enlace catálogo: `publicCatalogBaseUrl + \"/tienda/\" + publicCatalogSlug` (Waseller: "
+            "`resolvePublicCatalogBaseUrlForCrew()`)."
+        ),
+    )
 
     @field_validator("recentMessages", mode="before")
     @classmethod
@@ -155,6 +172,35 @@ class ShadowCompareRequest(BaseModel):
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}", s):
             raise ValueError("businessProfileSlug inválido (solo letras, números, . _ -)")
         return s
+
+    @field_validator("publicCatalogSlug", mode="after")
+    @classmethod
+    def normalize_public_catalog_slug(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s:
+            return None
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}", s):
+            return None
+        return s
+
+    @field_validator("publicCatalogBaseUrl", mode="after")
+    @classmethod
+    def normalize_public_catalog_base_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = str(v).strip().rstrip("/")
+        if not s:
+            return None
+        low = s.lower()
+        if not (low.startswith("https://") or low.startswith("http://")):
+            return None
+        if s.count("://") != 1:
+            return None
+        if any(c in s for c in ("\n", "\r", "<", ">", '"', "'", " ", "\t")):
+            return None
+        return s[:512]
 
 
 class CandidateDecision(BaseModel):

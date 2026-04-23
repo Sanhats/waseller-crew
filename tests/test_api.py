@@ -103,6 +103,8 @@ def test_shadow_compare_stub_negation_rewrites_pitch(client: TestClient) -> None
             "reason": "baseline_waseller",
         },
         "stockTable": [{"name": "Mesa algarrobo", "stock": 2}],
+        "publicCatalogSlug": "demo-tienda",
+        "publicCatalogBaseUrl": "https://stock.ejemplo.app",
     }
     r = client.post("/shadow-compare", json=body)
     assert r.status_code == 200
@@ -111,6 +113,7 @@ def test_shadow_compare_stub_negation_rewrites_pitch(client: TestClient) -> None
     assert "Te confirmo" not in dr
     assert "querés que te reserve" not in dr.lower()
     assert "catálogo" in dr.lower()
+    assert "https://stock.ejemplo.app/tienda/demo-tienda" in dr
     assert "negation_followup_guard" in (data["candidateDecision"].get("reason") or "")
 
 
@@ -415,6 +418,53 @@ def test_negation_followup_guard_on_pushy_reservation_without_recent_dup() -> No
     assert "negation_followup_guard" in (out.candidateDecision.reason or "")
     assert out.candidateDecision.nextAction == "reply_only"
     assert "catálogo" in dr.lower()
+
+
+def test_negation_followup_guard_includes_public_catalog_url() -> None:
+    from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards
+    from crew_shadow_crewai.models import (
+        CandidateDecision,
+        ShadowCompareRequest,
+        ShadowCompareResponse,
+    )
+
+    pitch = "¿Querés que te reserve una? Tengo 2 en stock."
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="no gracias",
+        interpretation={},
+        baselineDecision={},
+        stockTable=[{"name": "X", "stock": 2}],
+        publicCatalogSlug="mi-catalogo",
+        publicCatalogBaseUrl="https://app.tienda.com",
+    )
+    resp = ShadowCompareResponse(
+        candidateDecision=CandidateDecision(draftReply=pitch, nextAction="offer_reservation")
+    )
+    out = apply_followup_draft_guards(body, resp)
+    dr = (out.candidateDecision.draftReply or "") if out.candidateDecision else ""
+    assert "https://app.tienda.com/tienda/mi-catalogo" in dr
+
+
+def test_public_catalog_slug_invalid_coerced_to_none() -> None:
+    from crew_shadow_crewai.models import ShadowCompareRequest
+
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="hola",
+        interpretation={},
+        baselineDecision={"draftReply": "x"},
+        publicCatalogSlug="no/se/puede",
+        publicCatalogBaseUrl="https://ok.com",
+    )
+    assert body.publicCatalogSlug is None
+    assert body.publicCatalogBaseUrl == "https://ok.com"
 
 
 def test_negation_followup_guard_rewrites_duplicate() -> None:
