@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "kind": "waseller.shadow_compare.v1",
+  "tenantId": "00000000-0000-4000-8000-000000000001",
+  "leadId": "00000000-0000-4000-8000-000000000002",
+  "incomingText": "Hola, ¿qué tal?",
+  "interpretation": { "intent": "saludo", "nextAction": "reply_only", "source": "rules", "confidence": 0.5 },
+  "baselineDecision": {
+    "draftReply": "Hola, ¿en qué te ayudo?",
+    "nextAction": "reply_only",
+    "confidence": 0.5,
+    "reason": "baseline_waseller"
+  },
+  "tenantRuntimeContext": {
+    "version": 1,
+    "identity": {
+      "tenantId": "00000000-0000-4000-8000-000000000001",
+      "displayName": "Muebles Demo SA",
+      "plan": "starter"
+    },
+    "knowledge": {
+      "businessCategory": "Muebles y decoración",
+      "businessLabels": ["mesas", "exterior", "interior", "madera"],
+      "profileUpdatedAt": "2026-04-01T12:00:00.000Z"
+    },
+    "llm": {
+      "assistEnabled": true,
+      "confidenceThreshold": 0.72,
+      "guardrailsStrict": true,
+      "rolloutPercent": 100,
+      "modelName": "waseller-tenant-default"
+    },
+    "outboundMessaging": {
+      "senderRateMs": 800,
+      "senderPauseEvery": 12,
+      "senderPauseMs": 3000
+    },
+    "catalog": {
+      "publicSlug": "demo-tienda-rtc",
+      "publicBaseUrl": "https://app.ejemplo.com"
+    },
+    "paymentChannels": [
+      { "provider": "mercadopago", "status": "connected" }
+    ],
+    "timestamps": {
+      "tenantCreatedAt": "2025-01-15T10:00:00.000Z",
+      "tenantUpdatedAt": "2026-04-20T08:30:00.000Z"
+    },
+    "channel": {
+      "whatsAppBusinessNumber": "+5491100002222"
+    }
+  }
+}

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -61,6 +62,72 @@ def test_incoming_suggests_stop_variants() -> None:
     assert incoming_suggests_stop_or_rejection("no gracias!") is True
     assert incoming_suggests_stop_or_rejection("gracias no") is True
     assert incoming_suggests_stop_or_rejection("nop") is True
+    assert incoming_suggests_stop_or_rejection("no mejor no") is True
+
+
+def test_incoming_signals_product_or_topic_pivot() -> None:
+    from crew_shadow_crewai.draft_variant_guard import incoming_signals_product_or_topic_pivot
+
+    assert incoming_signals_product_or_topic_pivot("¿Tienen mesa de exterior?") is True
+    assert incoming_signals_product_or_topic_pivot("no mejor no, buscaba mesa de exterior en su lugar") is True
+    assert incoming_signals_product_or_topic_pivot("no quiero eso") is True
+    assert incoming_signals_product_or_topic_pivot("¿Tenés en rojo?") is False
+
+
+def test_topic_pivot_followup_guard_rewrites_repeated_talle_script() -> None:
+    from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards
+    from crew_shadow_crewai.models import (
+        CandidateDecision,
+        RecentMessageItem,
+        ShadowCompareRequest,
+        ShadowCompareResponse,
+    )
+
+    prev = (
+        "Tenemos Mesa de algarrobo disponible por $150.000. Decime qué talle buscás y te confirmo en el momento."
+    )
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="¿Tienen mesa de exterior?",
+        interpretation={},
+        baselineDecision={"draftReply": prev},
+        recentMessages=[RecentMessageItem(direction="outgoing", message=prev)],
+        stockTable=[{"name": "Mesa de algarrobo", "stock": 3}],
+    )
+    resp = ShadowCompareResponse(candidateDecision=CandidateDecision(draftReply=prev))
+    out = apply_followup_draft_guards(body, resp)
+    assert out.candidateDecision is not None
+    assert "topic_pivot_followup_guard" in (out.candidateDecision.reason or "")
+    dr = (out.candidateDecision.draftReply or "").lower()
+    assert "cambiamos de eje" in dr
+    assert prev.lower() not in dr
+
+
+def test_topic_pivot_guard_skips_when_draft_acknowledges() -> None:
+    from crew_shadow_crewai.draft_variant_guard import apply_topic_pivot_followup_guard
+    from crew_shadow_crewai.models import CandidateDecision, ShadowCompareRequest, ShadowCompareResponse
+
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="¿Tienen mesa de exterior?",
+        interpretation={},
+        baselineDecision={},
+        stockTable=[{"name": "Mesa de algarrobo", "stock": 1}],
+    )
+    good = (
+        "Entiendo que ahora buscás mesa de exterior. En stockTable solo figura la mesa de algarrobo interior; "
+        "no veo una fila de exterior acá. ¿Seguimos con esa línea o preferís que te derive?"
+    )
+    resp = ShadowCompareResponse(candidateDecision=CandidateDecision(draftReply=good))
+    out = apply_topic_pivot_followup_guard(body, resp)
+    assert out.candidateDecision is not None
+    assert out.candidateDecision.draftReply == good
 
 
 def test_shadow_compare_stub(client: TestClient) -> None:
@@ -296,6 +363,265 @@ def test_mesa_colores_fixture_parses_and_posts(client: TestClient) -> None:
     assert m.activeOffer is not None
     assert m.activeOffer.get("productName") == "Mesa de algarrobo"
     assert m.memoryFacts and len(m.memoryFacts) >= 1
+    r = client.post("/shadow-compare", json=raw)
+    assert r.status_code == 200
+    data = r.json()
+    assert data.get("candidateDecision")
+    dr = (data["candidateDecision"] or {}).get("draftReply") or ""
+    assert len(dr.strip()) > 0
+
+
+def test_tenant_runtime_context_fixture_parses() -> None:
+    from crew_shadow_crewai.models import ShadowCompareRequest
+    from crew_shadow_crewai.tenant_runtime_context import TenantRuntimeContextV1
+
+    path = Path(__file__).resolve().parents[1] / "fixtures" / "request.tenant_runtime_context.v1.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    m = ShadowCompareRequest.model_validate(raw)
+    assert m.tenantRuntimeContext is not None
+    rtc = m.tenantRuntimeContext
+    assert isinstance(rtc, TenantRuntimeContextV1)
+    assert rtc.version == 1
+    assert rtc.identity.displayName == "Muebles Demo SA"
+    assert rtc.catalog.publicSlug == "demo-tienda-rtc"
+    assert rtc.paymentChannels[0].provider == "mercadopago"
+    assert rtc.channel is not None and rtc.channel.whatsAppBusinessNumber == "+5491100002222"
+
+
+def test_shadow_compare_request_without_tenant_runtime_context() -> None:
+    from crew_shadow_crewai.models import ShadowCompareRequest
+
+    m = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="hola",
+        interpretation={},
+        baselineDecision={"draftReply": "x"},
+    )
+    assert m.tenantRuntimeContext is None
+
+
+def _minimal_tenant_runtime_context(*, identity_tenant_id: str):
+    from crew_shadow_crewai.tenant_runtime_context import (
+        TenantRuntimeCatalogV1,
+        TenantRuntimeContextV1,
+        TenantRuntimeIdentityV1,
+        TenantRuntimeKnowledgeV1,
+        TenantRuntimeLlmV1,
+        TenantRuntimeOutboundMessagingV1,
+        TenantRuntimeTimestampsV1,
+    )
+
+    return TenantRuntimeContextV1(
+        version=1,
+        identity=TenantRuntimeIdentityV1(
+            tenantId=identity_tenant_id,
+            displayName="X",
+            plan="starter",
+        ),
+        knowledge=TenantRuntimeKnowledgeV1(businessCategory="c", businessLabels=[]),
+        llm=TenantRuntimeLlmV1(
+            assistEnabled=True,
+            confidenceThreshold=0.5,
+            guardrailsStrict=False,
+            rolloutPercent=100,
+            modelName="m",
+        ),
+        outboundMessaging=TenantRuntimeOutboundMessagingV1(
+            senderRateMs=100, senderPauseEvery=10, senderPauseMs=1000
+        ),
+        catalog=TenantRuntimeCatalogV1(publicSlug=None, publicBaseUrl=None),
+        paymentChannels=[],
+        timestamps=TenantRuntimeTimestampsV1(
+            tenantCreatedAt="2025-01-01T00:00:00Z", tenantUpdatedAt="2025-01-01T00:00:00Z"
+        ),
+    )
+
+
+def test_tenant_runtime_identity_mismatch_warns(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from crew_shadow_crewai.models import ShadowCompareRequest
+
+    monkeypatch.delenv("SHADOW_COMPARE_STRICT_TENANT_RUNTIME_IDENTITY", raising=False)
+    rtc = _minimal_tenant_runtime_context(identity_tenant_id="00000000-0000-4000-8000-000000000099")
+    with caplog.at_level(logging.WARNING):
+        m = ShadowCompareRequest(
+            schemaVersion=1,
+            kind="waseller.shadow_compare.v1",
+            tenantId="00000000-0000-4000-8000-000000000001",
+            leadId="00000000-0000-4000-8000-000000000002",
+            incomingText="hola",
+            interpretation={},
+            baselineDecision={"draftReply": "x"},
+            tenantRuntimeContext=rtc,
+        )
+    assert m.tenantRuntimeContext is rtc
+    assert "tenant_runtime_identity_mismatch" in caplog.text
+
+
+def test_tenant_runtime_identity_mismatch_strict_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pydantic import ValidationError
+
+    from crew_shadow_crewai.models import ShadowCompareRequest
+
+    monkeypatch.setenv("SHADOW_COMPARE_STRICT_TENANT_RUNTIME_IDENTITY", "1")
+    rtc = _minimal_tenant_runtime_context(identity_tenant_id="00000000-0000-4000-8000-000000000099")
+    with pytest.raises(ValidationError) as exc:
+        ShadowCompareRequest(
+            schemaVersion=1,
+            kind="waseller.shadow_compare.v1",
+            tenantId="00000000-0000-4000-8000-000000000001",
+            leadId="00000000-0000-4000-8000-000000000002",
+            incomingText="hola",
+            interpretation={},
+            baselineDecision={"draftReply": "x"},
+            tenantRuntimeContext=rtc,
+        )
+    assert "coincide" in str(exc.value).lower()
+
+
+def test_tenant_runtime_identity_case_insensitive_match() -> None:
+    from crew_shadow_crewai.models import ShadowCompareRequest
+
+    same = "00000000-0000-4000-8000-000000000001"
+    rtc = _minimal_tenant_runtime_context(identity_tenant_id=same.upper())
+    m = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId=same,
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="hola",
+        interpretation={},
+        baselineDecision={"draftReply": "x"},
+        tenantRuntimeContext=rtc,
+    )
+    assert m.tenantRuntimeContext.identity.tenantId == same.upper()
+
+
+def test_public_catalog_url_prefers_root_over_runtime_catalog() -> None:
+    from crew_shadow_crewai.draft_variant_guard import public_catalog_full_url
+    from crew_shadow_crewai.models import ShadowCompareRequest
+    from crew_shadow_crewai.tenant_runtime_context import (
+        TenantRuntimeCatalogV1,
+        TenantRuntimeContextV1,
+        TenantRuntimeIdentityV1,
+        TenantRuntimeKnowledgeV1,
+        TenantRuntimeLlmV1,
+        TenantRuntimeOutboundMessagingV1,
+        TenantRuntimeTimestampsV1,
+    )
+
+    rtc = TenantRuntimeContextV1(
+        version=1,
+        identity=TenantRuntimeIdentityV1(
+            tenantId="00000000-0000-4000-8000-000000000001",
+            displayName="X",
+            plan="starter",
+        ),
+        knowledge=TenantRuntimeKnowledgeV1(businessCategory="c", businessLabels=[]),
+        llm=TenantRuntimeLlmV1(
+            assistEnabled=True,
+            confidenceThreshold=0.5,
+            guardrailsStrict=False,
+            rolloutPercent=100,
+            modelName="m",
+        ),
+        outboundMessaging=TenantRuntimeOutboundMessagingV1(
+            senderRateMs=100, senderPauseEvery=10, senderPauseMs=1000
+        ),
+        catalog=TenantRuntimeCatalogV1(publicSlug="from-rtc", publicBaseUrl="https://rtc.example.com"),
+        paymentChannels=[],
+        timestamps=TenantRuntimeTimestampsV1(
+            tenantCreatedAt="2025-01-01T00:00:00Z", tenantUpdatedAt="2025-01-01T00:00:00Z"
+        ),
+    )
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="hola",
+        interpretation={},
+        baselineDecision={"draftReply": "x"},
+        publicCatalogSlug="from-root",
+        publicCatalogBaseUrl="https://root.example.com",
+        tenantRuntimeContext=rtc,
+    )
+    assert public_catalog_full_url(body) == "https://root.example.com/tienda/from-root"
+
+
+def test_public_catalog_url_falls_back_to_runtime_catalog() -> None:
+    from crew_shadow_crewai.draft_variant_guard import public_catalog_full_url
+    from crew_shadow_crewai.models import ShadowCompareRequest
+    from crew_shadow_crewai.tenant_runtime_context import (
+        TenantRuntimeCatalogV1,
+        TenantRuntimeContextV1,
+        TenantRuntimeIdentityV1,
+        TenantRuntimeKnowledgeV1,
+        TenantRuntimeLlmV1,
+        TenantRuntimeOutboundMessagingV1,
+        TenantRuntimeTimestampsV1,
+    )
+
+    rtc = TenantRuntimeContextV1(
+        version=1,
+        identity=TenantRuntimeIdentityV1(
+            tenantId="00000000-0000-4000-8000-000000000001",
+            displayName="X",
+            plan="starter",
+        ),
+        knowledge=TenantRuntimeKnowledgeV1(businessCategory="c", businessLabels=[]),
+        llm=TenantRuntimeLlmV1(
+            assistEnabled=True,
+            confidenceThreshold=0.5,
+            guardrailsStrict=False,
+            rolloutPercent=100,
+            modelName="m",
+        ),
+        outboundMessaging=TenantRuntimeOutboundMessagingV1(
+            senderRateMs=100, senderPauseEvery=10, senderPauseMs=1000
+        ),
+        catalog=TenantRuntimeCatalogV1(publicSlug="from-rtc", publicBaseUrl="https://rtc.example.com"),
+        paymentChannels=[],
+        timestamps=TenantRuntimeTimestampsV1(
+            tenantCreatedAt="2025-01-01T00:00:00Z", tenantUpdatedAt="2025-01-01T00:00:00Z"
+        ),
+    )
+    body = ShadowCompareRequest(
+        schemaVersion=1,
+        kind="waseller.shadow_compare.v1",
+        tenantId="00000000-0000-4000-8000-000000000001",
+        leadId="00000000-0000-4000-8000-000000000002",
+        incomingText="hola",
+        interpretation={},
+        baselineDecision={"draftReply": "x"},
+        tenantRuntimeContext=rtc,
+    )
+    assert public_catalog_full_url(body) == "https://rtc.example.com/tienda/from-rtc"
+
+
+def test_tenant_runtime_context_fixture_posts(client: TestClient) -> None:
+    path = Path(__file__).resolve().parents[1] / "fixtures" / "request.tenant_runtime_context.v1.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    r = client.post("/shadow-compare", json=raw)
+    assert r.status_code == 200
+    assert r.json().get("candidateDecision")
+
+
+def test_topic_pivot_enriched_stock_fixture_parses_and_posts(client: TestClient) -> None:
+    """Ejemplo de stockTable ampliado tras giro a exterior (guía §4)."""
+    from crew_shadow_crewai.models import ShadowCompareRequest
+
+    path = Path(__file__).resolve().parents[1] / "fixtures" / "request.topic_pivot_enriched_stock.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    m = ShadowCompareRequest.model_validate(raw)
+    assert m.incomingText == "¿Tienen mesa de exterior?"
+    assert m.stockTable is not None and len(m.stockTable) == 3
+    assert m.publicCatalogSlug == "demo-tienda"
+    assert m.inventoryNarrowingNote is not None
     r = client.post("/shadow-compare", json=raw)
     assert r.status_code == 200
     data = r.json()

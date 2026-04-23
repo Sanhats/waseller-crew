@@ -26,7 +26,11 @@ from crew_shadow_crewai.constants import (
     INTERPRETATION_SOURCE_ENUM_DOC,
     NEXT_ACTION_ENUM_DOC,
 )
-from crew_shadow_crewai.draft_variant_guard import apply_followup_draft_guards, public_catalog_full_url
+from crew_shadow_crewai.draft_variant_guard import (
+    apply_followup_draft_guards,
+    effective_public_catalog_slug,
+    public_catalog_full_url,
+)
 from crew_shadow_crewai.models import (
     CandidateDecision,
     CandidateInterpretation,
@@ -157,6 +161,12 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         "- **tenantBrief, etapa, activeOffer, memoryFacts:** Si el JSON los trae, usalos para **embudo, "
         "última oferta y hechos del lead** junto con recentMessages; no contradigan stockTable. "
         "Si activeOffer y la tabla discrepan en precio/stock, **gana stockTable**.\n"
+        "- **tenantRuntimeContext (opcional):** Estado operativo que Waseller envía por HTTP (plan, flags LLM "
+        "del **tenant** en Waseller, pacing sugerido de outbound, `catalog`, `paymentChannels` solo "
+        "**informativos** — sin secretos, **no** habilitan cobros por sí solos). **No** reemplaza stockTable. "
+        "Prioridad de lectura: **1)** stockTable, **2)** tenantBrief + tenantCommercialContext, **3)** "
+        "tenantRuntimeContext, **4)** interpretation / activeOffer para el turno (si chocan con la tabla, "
+        "**gana stockTable**).\n"
         "- **Seguimiento (obligatorio):** Si incomingText pide **otro color**, **otro talle**, **otro modelo**, "
         "**otra medida**, **más unidades**, **otro producto**, **catálogo**, **envío**, etc., tu **primer "
         "párrafo** debe contestar eso. "
@@ -176,6 +186,16 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         "asistente: **fallaste** — reescribí desde cero contestando lo nuevo; no repitas el cierre del "
         "baseline si solo reenvía la misma oferta. Si el lead pidió variante y tu borrador repite la ficha: "
         "listado de otras filas o negativa clara, sin copiar el bloque anterior.\n"
+        "- **Cambio de producto / intención (crítico):** Si incomingText muestra **otro rubro o producto** "
+        "(p. ej. «mesa de exterior», «en su lugar buscaba…», «no quiero eso / otra cosa») **no** respondas "
+        "con el mismo párrafo de la mesa anterior (mismo precio + «decime qué talle») como si nada: "
+        "reconocé el giro, explicá con honestidad qué hay **solo** en stockTable (una fila vs varias) y "
+        "pedí datos concretos alineados a las filas o invitá al catálogo público si aplica; **no inventes** "
+        "filas que no existan.\n"
+        "- **Payload Waseller (calidad):** si el lead ya pivotó de producto y **stockTable sigue mostrando solo "
+        "la línea vieja**, contestá con la verdad y pedí criterio; la **mejor** experiencia es que Waseller "
+        "en el **siguiente POST** re-consulte catálogo y envíe **filas nuevas** acordes al giro + "
+        "`inventoryNarrowingNote` actualizado (ver guía de integración §4 «Re-ampliar stockTable»).\n"
         "- **Urgencia y escasez (natural):** Si una fila de stockTable tiene `availableStock` o `stock` "
         "entre 1 y 3, podés mencionarlo de forma natural ('quedan pocas unidades', 'son las últimas que "
         "tengo en ese talle') para motivar la decisión. No exageres ni inventes cantidades fuera del dato.\n"
@@ -378,16 +398,18 @@ def _interpretation_priority_banner(body: ShadowCompareRequest) -> str:
 
 def _public_catalog_prompt_note(body: ShadowCompareRequest) -> str:
     """Instrucción explícita para usar catálogo público (slug + origen) sin inventar URLs."""
-    slug = body.publicCatalogSlug
-    base = body.publicCatalogBaseUrl
-    if not slug and not base:
+    slug = effective_public_catalog_slug(body)
+    base = body.publicCatalogBaseUrl or (
+        body.tenantRuntimeContext.catalog.publicBaseUrl if body.tenantRuntimeContext else None
+    )
+    if not slug and not base and not public_catalog_full_url(body):
         return ""
     url = public_catalog_full_url(body)
     lines: list[str] = [
         "\n## Catálogo público de la tienda (Waseller)\n",
-        "En el JSON pueden venir **`publicCatalogSlug`** (columna `public.tenants.public_catalog_slug` / "
-        "Prisma `Tenant.publicCatalogSlug`) y opcionalmente **`publicCatalogBaseUrl`** (origen HTTPS del "
-        "storefront **sin** barra final, equivalente a `window.location.origin` en la app).\n",
+        "En el JSON pueden venir **`publicCatalogSlug`** / **`publicCatalogBaseUrl`** en la raíz, o el mismo "
+        "dato anidado en **`tenantRuntimeContext.catalog.publicSlug`** / **`publicBaseUrl`**. "
+        "Prioridad para armar el enlace: **raíz primero**; si falta alguno, usar **`tenantRuntimeContext.catalog`**.\n",
     ]
     if url:
         lines.append(f"**URL armada** (copiar tal cual al lead, sin modificar): `{url}`.\n")
@@ -406,6 +428,42 @@ def _public_catalog_prompt_note(body: ShadowCompareRequest) -> str:
         "en el JSON.\n\n"
     )
     return "".join(lines)
+
+
+def _tenant_runtime_context_block(body: ShadowCompareRequest) -> str:
+    """Resumen de tenantRuntimeContext para el redactor (None si no viene)."""
+    rtc = body.tenantRuntimeContext
+    if rtc is None:
+        return ""
+    labels = rtc.knowledge.businessLabels
+    labels_preview = ", ".join(labels[:12])
+    if len(labels) > 12:
+        labels_preview += "…"
+    pay_preview = (
+        ", ".join(f"{p.provider}:{p.status}" for p in rtc.paymentChannels[:8]) if rtc.paymentChannels else "—"
+    )
+    wa_block = ""
+    if rtc.channel and rtc.channel.whatsAppBusinessNumber:
+        wa_block = (
+            f"\n- **WhatsApp del negocio (`channel.whatsAppBusinessNumber`):** `{rtc.channel.whatsAppBusinessNumber}` "
+            "— número **del canal de la tienda**, no del cliente; solo si Waseller lo incluye en el payload.\n"
+        )
+    return (
+        "\n## Estado operativo del tenant (`tenantRuntimeContext`)\n"
+        "Bloque **opcional** (push HTTP). **No** inferir desde base de datos del crew. `paymentChannels` es "
+        "informativo; `llm.modelName` es el modelo configurado **en Waseller**, no el del microservicio crew.\n\n"
+        f"- **Identidad:** {rtc.identity.displayName} · plan `{rtc.identity.plan}` · tenantId runtime "
+        f"`{rtc.identity.tenantId}`\n"
+        f"- **Knowledge:** categoría `{rtc.knowledge.businessCategory}` · etiquetas: {labels_preview or '—'}\n"
+        f"- **LLM (tenant Waseller):** assistEnabled={rtc.llm.assistEnabled}, confidenceThreshold="
+        f"{rtc.llm.confidenceThreshold}, guardrailsStrict={rtc.llm.guardrailsStrict}, rolloutPercent="
+        f"{rtc.llm.rolloutPercent}, modelName=`{rtc.llm.modelName}`\n"
+        f"- **Outbound (referencia):** cada {rtc.outboundMessaging.senderRateMs} ms, pausa cada "
+        f"{rtc.outboundMessaging.senderPauseEvery} mensajes por {rtc.outboundMessaging.senderPauseMs} ms\n"
+        f"- **Canales de pago (info):** {pay_preview}\n"
+        f"- **Timestamps:** creado `{rtc.timestamps.tenantCreatedAt}` · actualizado `{rtc.timestamps.tenantUpdatedAt}`\n"
+        f"{wa_block}\n"
+    )
 
 
 def _tenant_commercial_context_redactor_note(body: ShadowCompareRequest) -> str:
@@ -450,6 +508,7 @@ Clasificá el turno con **incomingText + recentMessages + interpretation** (y co
 - **Rechazo o “no”** (a la reserva o a la pregunta que le hicimos): sin insistir ni repetir el mismo cierre; tono **conclusivo** e invitación a seguir el **catálogo público**; si el JSON trae `publicCatalogSlug` y `publicCatalogBaseUrl`, podés pasar el enlace `{publicCatalogBaseUrl}/tienda/{publicCatalogSlug}` (sin inventar dominio ni slug).
 - **Derivación / asesor humano:** Reconocé el pedido, `handoff_human` si corresponde, sin volver a empujar la misma reserva; podés combinar con invitación al catálogo público cuando vengan slug/origen en el JSON (sin inventar fuera de stockTable).
 - **Cambio de tema / catálogo / “qué más tenés”:** Aclará alcance del inventario enviado y pedí criterio si hace falta; no inventes catálogo.
+- **Cambio de producto en el mismo hilo:** Si el lead pasa de un producto a **otro tipo** (ej. interior → exterior, «en su lugar» otra cosa), **no** reutilices el bloque previo ni el CTA de talle; leé la nueva intención y respondé en consecuencia con stockTable.
 - **Mensaje ambiguo o multitema:** Una frase de aclaración o priorizá lo más urgente; pedí un solo dato si falta para avanzar.
 - **Cortesía o charla lateral breve:** Respondé en una línea y volvé al paso de venta sin alargar.
 Si aplica más de uno, priorizá lo explícito en incomingText; usá interpretation para desambiguar cuando el texto sea vago.
@@ -497,6 +556,7 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
     negotiation_block = _waseller_negotiation_context_block(body)
     tenant_note = _tenant_commercial_context_redactor_note(body)
     catalog_note = _public_catalog_prompt_note(body)
+    rtc_block = _tenant_runtime_context_block(body)
     flow_rules = _CONVERSATIONAL_FLOW_FOR_REDACTOR
     llm = _shadow_crew_llm()
     use_director = _use_conversation_director()
@@ -544,6 +604,7 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
         f"{negotiation_block}"
         f"{tenant_note}"
         f"{catalog_note}"
+        f"{rtc_block}"
         f"{redactor_intro}"
         f"{flow_rules}\n"
         f"{mission}\n"
@@ -618,6 +679,9 @@ def _crew_llm_response(body: ShadowCompareRequest) -> ShadowCompareResponse:
         "Si incomingText pide **asesor/derivación** o es **negativa** clara a reserva/cierre: draftReply **no** "
         "debe repetir la misma confirmación de producto ni el mismo '¿te reservo?'; priorizá handoff o cierre "
         "breve que invite a seguir el catálogo según las reglas del rol (sin inventar fuera de stockTable).\n"
+        "Si incomingText indica **cambio de producto o rubro** (exterior, otra mesa, «en su lugar», etc.) y el "
+        "borrador sigue con el mismo guion de antes (mismo precio + pedido de talle genérico): **obligatorio** "
+        "reemplazarlo: reconocé el giro, delimitá stockTable y pedí aclaración útil.\n"
         "draftReply no debe quedar vacío si el contexto permite al menos un borrador útil.\n"
         "Si el JSON trae `interpretation` con intención o entidades, el borrador debe ser **coherente** "
         "con esa lectura siempre que no contradiga stockTable ni invente datos.\n"

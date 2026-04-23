@@ -18,7 +18,7 @@ Alineados al documento Waseller (mismos nombres y semántica).
 | `conversationId` | `string \| null` | Opcional. |
 | `recentMessages` | `array` | `{ "direction": "incoming" \| "outgoing", "message": "string" }[]`. En crew: tope **8** (truncado si hay más). |
 | `businessProfileSlug` | `string` | Opcional. Patrón `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$` (ej. `indumentaria_calzado`). Overlay de prompts: `tenant_prompts/<slug>.txt` o directorio `CREW_TENANT_PROMPTS_DIR`. |
-| `stockTable` | `array` | Opcional. Filas alineadas a **`GET /products`** (una variante por fila). Propiedades típicas: `variantId`, `productId`, `name`, `sku`, `attributes`, `stock`, `reservedStock`, `availableStock`, `effectivePrice`, `imageUrl`, `isActive`, `tags`, `basePrice`, `variantPrice`. **Tope 500** filas por request (validado en crew). |
+| `stockTable` | `array` | Opcional. Filas alineadas a **`GET /products`** (una variante por fila). Propiedades típicas: `variantId`, `productId`, `name`, `sku`, `attributes`, `stock`, `reservedStock`, `availableStock`, `effectivePrice`, `imageUrl`, `isActive`, `tags`, `basePrice`, `variantPrice`. **Tope 500** filas por request (validado en crew). Tras un **giro de producto/rubro** en el hilo, Waseller debería **re-armar** este array en el siguiente POST (nueva búsqueda + nota en `inventoryNarrowingNote`); ver guía waseller-crew §4 «Re-ampliar stockTable». |
 | `inventoryNarrowingNote` | `string` | Opcional. Texto de Waseller sobre cómo se acotó el inventario; se inyecta al prompt del crew. |
 | `tenantCommercialContext` | `string` | Opcional (≤6000). Políticas, tono, horarios, pagos, envíos. |
 | `tenantBrief` | `string` | Opcional (≤2500). Resumen corto del negocio o contexto del lead. |
@@ -27,6 +27,7 @@ Alineados al documento Waseller (mismos nombres y semántica).
 | `memoryFacts` | `string[]` | Opcional. Hasta **40** strings (≤400 chars c/u); hechos recordados del lead. |
 | `publicCatalogSlug` | `string` | Opcional (≤128). Slug del catálogo público (`public.tenants.public_catalog_slug` / Prisma `Tenant.publicCatalogSlug`). Patrón seguro: `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`. Si es inválido, el crew lo ignora. |
 | `publicCatalogBaseUrl` | `string` | Opcional (≤512). Origen del storefront **sin** barra final (`https://…`). Con `publicCatalogSlug` válido, el enlace literal es **`publicCatalogBaseUrl + "/tienda/" + publicCatalogSlug`** (igual que en la app). En Waseller main puede obtenerse vía **`resolvePublicCatalogBaseUrlForCrew()`** (API exportada para reutilizar o testear). Si es inválido, el crew lo ignora. |
+| `tenantRuntimeContext` | `object \| null` | **Opcional.** Estado operativo del tenant en Waseller (`version: 1`, camelCase). Contrato canónico y tabla de campos: **`docs/integrations/waseller-crew/CONTRATO_V1_1.md`** en el monorepo Waseller (tipo fuente: `CrewTenantRuntimeContextV1` / `loadCrewTenantRuntimeContextForCrewPayload` en `assembleShadowCompareOutboundBody`). Incluye `identity`, `knowledge`, `llm`, `outboundMessaging`, `catalog` (`publicSlug` / `publicBaseUrl` sin `/` final), `paymentChannels` (solo informativo, sin secretos), `timestamps`, `channel` opcional (`whatsAppBusinessNumber` = número **del negocio**, solo si Waseller activa el flag correspondiente). Si falta u omite Waseller, el crew sigue con `tenantBrief`, `stockTable` y raíz. **Prioridad de contexto en prompts:** `stockTable` > `tenantBrief` / `tenantCommercialContext` > `tenantRuntimeContext` > `interpretation` / `activeOffer` (si chocan con `stockTable`, gana `stockTable`). URL de tienda: si vienen `publicCatalogSlug` + `publicCatalogBaseUrl` en raíz, el crew **prefiere** esa pareja; si no, puede armar `{catalog.publicBaseUrl}/tienda/{catalog.publicSlug}` desde `tenantRuntimeContext.catalog`. **Consistencia `identity.tenantId`:** si viene y difiere de `tenantId` raíz (comparación case-insensitive), por defecto el servicio solo **loguea** un warning; con **`SHADOW_COMPARE_STRICT_TENANT_RUNTIME_IDENTITY=1`** (`true`/`yes`) el POST **falla** validación (HTTP 422). |
 
 **Endpoints:** `POST /shadow-compare` y alias **`POST /v1/shadow-compare`** (mismo handler, misma validación Pydantic y misma auth).
 
@@ -42,6 +43,7 @@ Alineados al documento Waseller (mismos nombres y semántica).
 |----------|-------------|
 | `SHADOW_COMPARE_SECRET` | Mismo valor que `LLM_SHADOW_COMPARE_SECRET` en workers Waseller. |
 | `SHADOW_COMPARE_REQUIRE_AUTH` | `true`: exige `Authorization: Bearer <secret>`. En prod público: **`true`** recomendado. |
+| `SHADOW_COMPARE_STRICT_TENANT_RUNTIME_IDENTITY` | Opcional. `1` / `true` / `yes`: si `tenantRuntimeContext.identity.tenantId` ≠ `tenantId` raíz (tras normalizar), el body se rechaza con **422**. Por defecto (sin variable): solo **warning** en logs y el request sigue. |
 
 Waseller **solo envía** `Authorization: Bearer` si `LLM_SHADOW_COMPARE_SECRET` está definido y no vacío.
 
@@ -61,6 +63,7 @@ Implementación: dependencia FastAPI en la ruta POST (`auth.py` — no middlewar
 
 - `fixtures/request.example.json` — solo v1.
 - `fixtures/request.v1_1.example.json` — v1 + opcionales; `stockTable` en forma **canónica Waseller** (shape `GET /products`).
+- `fixtures/request.tenant_runtime_context.v1.json` — body mínimo v1 + `tenantRuntimeContext` completo de ejemplo (parseo y smoke POST).
 
 ## 4.1 Comandos contra producción
 
@@ -87,7 +90,7 @@ Cada request exitosa al POST emite una línea JSON con `event: shadow_compare_co
 | Lado | Estado |
 |------|--------|
 | **Waseller** | Body extendido + Bearer condicional (según su doc). |
-| **waseller-crew** | `ShadowCompareRequest` con opcionales (incl. `tenantBrief`, `etapa`, `activeOffer`, `memoryFacts`); auth Bearer; fixtures; prompts con hilo + `stockTable` / tenant; alias `/v1/shadow-compare`. |
+| **waseller-crew** | `ShadowCompareRequest` con opcionales (incl. `tenantBrief`, `etapa`, `activeOffer`, `memoryFacts`, **`tenantRuntimeContext`**); auth Bearer; fixtures; prompts con hilo + `stockTable` / tenant; alias `/v1/shadow-compare`. Waseller puede enviar `tenantRuntimeContext` opcional; el servicio lo parsea (Pydantic) y lo expone al crew en el bloque de contexto del agente. |
 | **Ops** | Mismo secret workers ↔ crew; prod: `SHADOW_COMPARE_REQUIRE_AUTH=true`; timeout worker acorde al LLM. |
 
 ---

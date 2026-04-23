@@ -1,7 +1,9 @@
+import logging
+import os
 import re
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from crew_shadow_crewai.constants import (
     CONVERSATION_STAGES,
@@ -11,9 +13,21 @@ from crew_shadow_crewai.constants import (
     NEXT_ACTIONS,
     NextAction,
 )
+from crew_shadow_crewai.tenant_runtime_context import TenantRuntimeContextV1
 from crew_shadow_crewai.text_encoding import repair_utf8_mojibake
 
+log = logging.getLogger(__name__)
+
 MessageDirection = Literal["incoming", "outgoing"]
+
+
+def _strict_tenant_runtime_identity_env() -> bool:
+    """Si es true, `identity.tenantId` debe coincidir con `tenantId` raíz (tras normalizar)."""
+    return os.environ.get("SHADOW_COMPARE_STRICT_TENANT_RUNTIME_IDENTITY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 class RecentMessageItem(BaseModel):
@@ -99,6 +113,14 @@ class ShadowCompareRequest(BaseModel):
             "Origen del storefront **sin** barra final (p. ej. `https://mi-dominio.app`). "
             "Enlace catálogo: `publicCatalogBaseUrl + \"/tienda/\" + publicCatalogSlug` (Waseller: "
             "`resolvePublicCatalogBaseUrlForCrew()`)."
+        ),
+    )
+    tenantRuntimeContext: TenantRuntimeContextV1 | None = Field(
+        default=None,
+        description=(
+            "Estado operativo del tenant (Waseller `TenantRuntimeContextV1`): plan, LLM flags, pacing, "
+            "catálogo público, paymentChannels informativos, etc. Opcional; push por HTTP — el crew **no** "
+            "lee la DB de Waseller para reconstruirlo."
         ),
     )
 
@@ -201,6 +223,34 @@ class ShadowCompareRequest(BaseModel):
         if any(c in s for c in ("\n", "\r", "<", ">", '"', "'", " ", "\t")):
             return None
         return s[:512]
+
+    @model_validator(mode="after")
+    def tenant_runtime_identity_matches_root_tenant_id(self) -> Self:
+        """
+        Consistencia opcional: `tenantRuntimeContext.identity.tenantId` debe alinear con `tenantId` raíz.
+
+        Por defecto solo se registra warning. Con `SHADOW_COMPARE_STRICT_TENANT_RUNTIME_IDENTITY=1`
+        el request falla la validación Pydantic (HTTP 422).
+        """
+        rtc = self.tenantRuntimeContext
+        if rtc is None:
+            return self
+        embedded = (rtc.identity.tenantId or "").strip()
+        root = (self.tenantId or "").strip()
+        if not embedded or not root:
+            return self
+        if embedded.casefold() == root.casefold():
+            return self
+        if _strict_tenant_runtime_identity_env():
+            raise ValueError(
+                "tenantRuntimeContext.identity.tenantId no coincide con tenantId raíz del body"
+            )
+        log.warning(
+            "tenant_runtime_identity_mismatch tenant_id_root=%r tenant_id_embedded=%r",
+            root,
+            embedded,
+        )
+        return self
 
 
 class CandidateDecision(BaseModel):

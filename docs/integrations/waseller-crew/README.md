@@ -12,6 +12,7 @@
    - `recentMessages`, `interpretation`, `baselineDecision`, `stockTable`, `inventoryNarrowingNote`
    - `tenantCommercialContext` y/o **`tenantBrief`**, **`etapa`**, **`activeOffer`**, **`memoryFacts`** (opcionales; se inyectan al prompt cuando vienen)
    - **`publicCatalogSlug`** y **`publicCatalogBaseUrl`** (opcionales; enlace literal `publicCatalogBaseUrl + "/tienda/" + publicCatalogSlug`; en main: `resolvePublicCatalogBaseUrlForCrew()` para la base)
+   - **`tenantRuntimeContext`** (opcional; `version: 1`) — estado operativo del tenant (plan, LLM, catálogo público anidado, pagos a nivel integración, pacing de envío, etc.); ver contrato Waseller `CONTRATO_V1_1.md` y resumen en [`CONTRATO_HTTP_V1_1.md`](../../CONTRATO_HTTP_V1_1.md). Si no viene, el crew no falla.
    - `businessProfileSlug`, `correlationId`, etc. según [`CONTRATO_HTTP_V1_1.md`](../../CONTRATO_HTTP_V1_1.md)
 
 2. **Respuesta** — JSON con `candidateDecision.draftReply` **no vacío** (y `intent` / `confidence` / `nextAction` coherentes) para que Waseller haga merge y reemplace el baseline cuando corresponda. Si el crew falla o el borrador queda vacío, el servicio puede rellenar desde baseline (ver logs `shadow_compare_empty_draft_*`).
@@ -22,6 +23,8 @@
 
 5. **Bearer** — Mismo secreto: `LLM_SHADOW_COMPARE_SECRET` (workers) = `SHADOW_COMPARE_SECRET` (crew). Producción: `SHADOW_COMPARE_REQUIRE_AUTH=true`.
 
-6. **Prueba de regresión** — Fixture de diálogo mesa → colores: [`../../../fixtures/request.mesa_colores.json`](../../../fixtures/request.mesa_colores.json) + test `test_mesa_colores_fixture_parses_and_posts` en `tests/test_api.py`.
+6. **Prueba de regresión** — Fixture de diálogo mesa → colores: [`../../../fixtures/request.mesa_colores.json`](../../../fixtures/request.mesa_colores.json) + test `test_mesa_colores_fixture_parses_and_posts` en `tests/test_api.py`. Tras **giro de rubro** y `stockTable` ampliado: [`../../../fixtures/request.topic_pivot_enriched_stock.json`](../../../fixtures/request.topic_pivot_enriched_stock.json).
 
 7. **Baseline de respaldo** — Si el crew no devuelve `draftReply` válido o falla HTTP, Waseller debe seguir con baseline (LLM interno o plantillas). Por eso el crew tiene que ser **confiable** antes de apagar el camino corto en producción.
+
+8. **Sole mode (Waseller)** — El texto de venta al lead puede venir del crew cuando el POST se aplica como primario; el **lead worker** sigue orquestando (baseline, POST, shadow, guardrails, DB) y puede ejecutar **operativa** (p. ej. link MP) sin duplicar plantillas. Detalle: [`../../GUIA_INTEGRACION_WASELLER_MAIN.md`](../../GUIA_INTEGRACION_WASELLER_MAIN.md) §6 «Sole mode».

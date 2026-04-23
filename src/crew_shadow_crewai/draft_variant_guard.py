@@ -161,13 +161,32 @@ def incoming_asks_catalog_or_broader_products(text: str) -> bool:
     return bool(_CATALOG_ASK_RE.search((text or "").strip()))
 
 
+def effective_public_catalog_slug(body: ShadowCompareRequest) -> str | None:
+    """Slug público: raíz (`publicCatalogSlug`) tiene prioridad; si no, `tenantRuntimeContext.catalog.publicSlug`."""
+    if body.publicCatalogSlug:
+        return body.publicCatalogSlug
+    rtc = body.tenantRuntimeContext
+    if rtc is not None and rtc.catalog.publicSlug:
+        return rtc.catalog.publicSlug
+    return None
+
+
 def public_catalog_full_url(body: ShadowCompareRequest) -> str | None:
-    """`{publicCatalogBaseUrl}/tienda/{publicCatalogSlug}` si ambos vienen válidos."""
-    slug = body.publicCatalogSlug
-    base = body.publicCatalogBaseUrl
-    if not slug or not base:
-        return None
-    return f"{base}/tienda/{slug}"
+    """
+    `{base}/tienda/{slug}`: prioriza `publicCatalogBaseUrl` + `publicCatalogSlug` en raíz;
+    si faltan, usa `tenantRuntimeContext.catalog.publicBaseUrl` + `publicSlug`.
+    """
+    slug_r = body.publicCatalogSlug
+    base_r = body.publicCatalogBaseUrl
+    if slug_r and base_r:
+        return f"{base_r}/tienda/{slug_r}"
+    rtc = body.tenantRuntimeContext
+    if rtc is not None and rtc.catalog.publicSlug and rtc.catalog.publicBaseUrl:
+        b = str(rtc.catalog.publicBaseUrl).rstrip("/")
+        s = (rtc.catalog.publicSlug or "").strip()
+        if b and s:
+            return f"{b}/tienda/{s}"
+    return None
 
 
 def build_public_catalog_invite_sentence(body: ShadowCompareRequest) -> str:
@@ -175,7 +194,7 @@ def build_public_catalog_invite_sentence(body: ShadowCompareRequest) -> str:
     Invitación al catálogo público (origen + /tienda/ + slug, alineado a Tenant.publicCatalogSlug).
     """
     url = public_catalog_full_url(body)
-    slug = body.publicCatalogSlug
+    slug = effective_public_catalog_slug(body)
     if url:
         return (
             "El catálogo público de la tienda se va actualizando con lo que van cargando; "
@@ -190,6 +209,159 @@ def build_public_catalog_invite_sentence(body: ShadowCompareRequest) -> str:
     return (
         "Seguí el catálogo público desde la tienda online del negocio para ver lo que se publica "
         "con el tiempo."
+    )
+
+
+_TOPIC_PIVOT_RE = re.compile(
+    r"(?:"
+    r"\ben\s+su\s+lugar\b"
+    r"|\ben\s+lugar\s+de\b"
+    r"|\bestaba\s+buscando\b"
+    r"|\botro\s+(?:producto|tipo|rubro|modelo|estilo)\b"
+    r"|\bno\s+(?:es\s+eso|era\s+eso)\b"
+    r"|\bno\s+mejor\s+no\b"
+    r"|\b(?:mesa|mesas)\s+(?:de\s+)?exterior\b"
+    r"|\b(?:mesa|mesas)\b[^.!?]{0,45}\bexterior\b"
+    r"|\bmesa\s+exterior\b"
+    r"|\bno\s+quiero\s+eso\b"
+    r"|\bno\s+quiero\s+(?:una?\s+)?(?:la\s+|esa\s+)?mesa\b"
+    r"|\b(?:quiero|busco|necesito)\s+(?:una?\s+)?mesa\s+exterior\b"
+    r")",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def incoming_signals_product_or_topic_pivot(text: str) -> bool:
+    """Lead cambia de producto, rubro o aclara que lo anterior no era lo que buscaba."""
+    return bool(_TOPIC_PIVOT_RE.search((text or "").strip()))
+
+
+def _distinct_primary_labels_from_stock(rows: list[dict[str, Any]], *, limit: int = 8) -> list[str]:
+    """Nombres distintos desde filas (name / nombre / productName)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for row in rows:
+        label = str(row.get("name") or row.get("nombre") or row.get("productName") or "").strip()
+        if not label:
+            continue
+        key = _fold(label)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(label)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def draft_acknowledges_product_pivot(draft: str, incoming: str) -> bool:
+    """El borrador ya atiende el giro del lead (nuevo rubro o límites del inventario)."""
+    d = _fold(draft)
+    inc = _fold(incoming)
+    if "exterior" in inc and "exterior" in d:
+        return True
+    if any(
+        x in d
+        for x in (
+            "lo que veniamos viendo",
+            "lo que venias viendo",
+            "distinta de lo que",
+            "distinto de lo que",
+            "no aparece en el inventario",
+            "no figura en el inventario",
+            "no veo una fila",
+            "solo figura",
+            "solo tengo cargado",
+            "solo aparece",
+            "fuera de este listado",
+            "cambiamos de idea",
+            "esto que decis ahora",
+        )
+    ):
+        return True
+    return False
+
+
+def _is_generic_size_closer_template(draft: str) -> bool:
+    """Plantilla que insiste en talle/medida sin leer un cambio de producto (muy genérica)."""
+    d = _fold(draft)
+    if "talle" not in d and "medida" not in d and "tamano" not in d and "tamaño" not in d:
+        return False
+    if "decime" not in d and "decí" not in d and "decinos" not in d:
+        return False
+    return "disponible" in d or "tenemos" in d or "tengo" in d
+
+
+def build_topic_pivot_followup_reply(body: ShadowCompareRequest) -> str:
+    catalog = build_public_catalog_invite_sentence(body)
+    rows = body.stockTable or []
+    labels = _distinct_primary_labels_from_stock(rows)
+    if len(labels) <= 1:
+        pivot_tail = (
+            "En el inventario que tengo **solo para este turno** aparece lo que ya veníamos viendo en la tabla "
+            "(no invento acá una fila de «mesa de exterior» ni otro rubro que no esté en stockTable). "
+        )
+    else:
+        listed = ", ".join(labels[:6])
+        more = "…" if len(labels) > 6 else ""
+        pivot_tail = (
+            f"En el listado de este turno aparecen, entre otras líneas: {listed}{more}. "
+            "Decime cuál te interesa **con nombre** o palabras que salgan en la tabla; si lo que buscás no está en "
+            "ninguna fila, no puedo afirmar stock desde acá. "
+        )
+    return (
+        "Entiendo, **cambiamos de eje**: te respondo a lo que decís ahora, no al mismo cierre de recién. "
+        f"{pivot_tail}"
+        f"{catalog} "
+        "Si seguimos por este canal, mandame **nombre, rubro o palabras clave** del producto nuevo y lo cruzo "
+        "solo con lo que figure en stockTable."
+    )[:2000]
+
+
+def apply_topic_pivot_followup_guard(
+    body: ShadowCompareRequest,
+    resp: ShadowCompareResponse,
+) -> ShadowCompareResponse:
+    """
+    Lead pide otro producto/rubro (exterior, en su lugar, etc.) y el borrador repite el guion anterior.
+    """
+    if not _env_guard_enabled("CREW_SHADOW_TOPIC_PIVOT_GUARD", default=True):
+        return resp
+    cd = resp.candidateDecision
+    if cd is None:
+        return resp
+    draft = (cd.draftReply or "").strip()
+    if not draft:
+        return resp
+    inc = (body.incomingText or "").strip()
+    if not inc or not incoming_signals_product_or_topic_pivot(inc):
+        return resp
+    if draft_acknowledges_product_pivot(draft, inc):
+        return resp
+    dup, _, _ = _duplicate_vs_recent(draft, body)
+    if not dup and not _is_generic_size_closer_template(draft) and not _is_pushy_reservation_pitch(draft):
+        return resp
+    new_text = build_topic_pivot_followup_reply(body)
+    prev_reason = (cd.reason or "").strip()
+    new_reason = "topic_pivot_followup_guard" if not prev_reason else f"{prev_reason}|topic_pivot_followup_guard"
+    log.info(
+        structured_log_line(
+            "shadow_compare_topic_pivot_followup_guard_applied",
+            tenant_id=body.tenantId,
+            lead_id=body.leadId,
+            correlation_id=body.correlationId,
+        )
+    )
+    return ShadowCompareResponse(
+        candidateDecision=cd.model_copy(
+            update={
+                "draftReply": new_text[:2000],
+                "reason": new_reason[:500],
+                "nextAction": "ask_clarification",
+                "recommendedAction": "ask_clarification",
+            }
+        ),
+        candidateInterpretation=resp.candidateInterpretation,
     )
 
 
@@ -571,6 +743,7 @@ _NEGATION_DUPLICATE_RE = re.compile(
     r"|^\s*nop\s*[!?.…]*\s*$"
     r"|\b(?:nono|no\s+no)\b"
     r"|no\s*,\s*no\s+quiero\b"
+    r"|\bno\s+mejor\s+no\b"
     r"|\bno\s+quiero\b"
     r"|\bno\s+me\s+interesa\b"
     r"|\bno\s+gracias\b"
@@ -809,6 +982,7 @@ def apply_followup_draft_guards(
     """Cadena de salvaguardas post-LLM (orden importa)."""
     resp = apply_handoff_request_guard(body, resp)
     resp = apply_negation_followup_guard(body, resp)
+    resp = apply_topic_pivot_followup_guard(body, resp)
     resp = apply_multi_variant_list_guard(body, resp)
     resp = apply_variant_followup_guard(body, resp)
     resp = apply_price_followup_guard(body, resp)

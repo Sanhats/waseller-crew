@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "waseller.shadow_compare.v1",
+  "tenantId": "00000000-0000-4000-8000-000000000001",
+  "leadId": "00000000-0000-4000-8000-000000000002",
+  "incomingText": "¿Tienen mesa de exterior?",
+  "interpretation": {
+    "intent": "consultar_otro_producto",
+    "confidence": 0.72,
+    "nextAction": "ask_clarification",
+    "source": "openai"
+  },
+  "baselineDecision": {
+    "draftReply": "Tenemos Mesa de algarrobo disponible por $150.000. Decime qué talle buscás y te confirmo en el momento.",
+    "nextAction": "reply_only",
+    "recommendedAction": "reply_only",
+    "confidence": 0.55,
+    "reason": "baseline_waseller"
+  },
+  "recentMessages": [
+    { "direction": "incoming", "message": "hola, tienen mesa de algarrobo?" },
+    { "direction": "outgoing", "message": "Tenemos mesa algarrobo. ¿Qué talle buscás?" },
+    { "direction": "incoming", "message": "no, mejor buscaba mesa de exterior en su lugar" }
+  ],
+  "businessProfileSlug": "muebles_deco",
+  "inventoryNarrowingNote": "Unión: línea algarrobo ya vista + búsqueda activa mesa/exterior; variantes con stock > 0 (subconjunto, no catálogo completo).",
+  "stockTable": [
+    {
+      "name": "Mesa de algarrobo ratona",
+      "attributes": { "color": "marrón", "uso": "interior" },
+      "availableStock": 3,
+      "effectivePrice": 150000
+    },
+    {
+      "name": "Mesa terraza polietileno",
+      "attributes": { "uso": "exterior", "material": "HDPE" },
+      "availableStock": 2,
+      "effectivePrice": 220000
+    },
+    {
+      "name": "Set jardín aluminio",
+      "attributes": { "uso": "exterior" },
+      "availableStock": 1,
+      "effectivePrice": 310000
+    }
+  ],
+  "publicCatalogSlug": "demo-tienda",
+  "publicCatalogBaseUrl": "https://ejemplo.app"
+}

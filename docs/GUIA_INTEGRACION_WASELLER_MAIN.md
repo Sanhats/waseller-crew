@@ -87,7 +87,7 @@ Estos campos **no son opcionales en la práctica**: sin ellos el agente trabaja 
 ```
 
 - El shape es el mismo que devuelve `GET /products` de Waseller — no hay que transformar nada.
-- Enviar **solo las variantes relevantes** para la conversación actual (producto que preguntó el lead, variantes del mismo producto, alternativas cercanas). No enviar todo el catálogo.
+- Enviar **solo las variantes relevantes** para la conversación actual (producto que preguntó el lead, variantes del mismo producto, alternativas cercanas). No enviar todo el catálogo. **Excepción operativa:** cuando el lead **abre** el embudo a otro rubro o producto, conviene **ampliar** el subconjunto en el siguiente POST (ver §4 «Re-ampliar stockTable»).
 - Máximo **500 filas** (el crew trunca si hay más).
 - **Por qué importa:** el agente usa `stockTable` para cotizar, informar disponibilidad, detectar variantes, generar urgencia cuando el stock es bajo (`availableStock` entre 1 y 3) y ofrecer cross-sell con productos reales del listado.
 
@@ -189,6 +189,25 @@ No enviar todo el catálogo. El agente trabaja mejor con pocas filas relevantes 
 3. Si hay productos similares como alternativa: incluirlos (máximo 2-3 productos alternativos).
 4. Excluir siempre: variantes sin stock (`availableStock = 0`), variantes inactivas (`isActive = false`), productos de otra categoría.
 
+### Re-ampliar `stockTable` en el **siguiente** POST (giro de embudo / otro rubro)
+
+Cuando el lead **cambia de línea** (ej. de mesa algarrobo interior a **mesa de exterior**, “en su lugar otra cosa”, “no quiero eso”), seguir mandando **solo la fila original** hace que el modelo y los guards no tengan material real para contestar bien. Waseller debería **volver a consultar el catálogo** y armar un `stockTable` **nuevo o ampliado** en el request **posterior** a ese giro.
+
+**Cuándo re-armar (heurística recomendada en el worker):**
+
+- Cambio claro de intención en `incomingText` o en `interpretation` (otro producto, exterior, “en su lugar”, etc.), o
+- Tras varios turnos el lead sigue pidiendo algo que **no aparece** en las filas actuales.
+
+**Qué hacer técnicamente:**
+
+1. **Nueva búsqueda** al mismo origen que alimenta `GET /products` (o servicio de búsqueda del tenant): términos del **último mensaje** y, si aplica, del hilo (`recentMessages`), categorías/tags (ej. `exterior`, `jardín`), sin abrir el grifo a todo el catálogo.
+2. **Unión con contexto:** incluir filas ya relevantes (lo que ya vio el lead) **más** las nuevas coincidencias; **deduplicar** por `variantId` / `sku` según tengan en el modelo.
+3. **Tope:** respetar el máximo de **500** filas del crew; ordenar por relevancia (match con la consulta actual primero).
+4. **Actualizar `inventoryNarrowingNote`:** describir el nuevo criterio, p. ej. *«Unión: línea algarrobo consultada + búsqueda “mesa” + uso exterior; stock > 0, activas»*. Así el agente no cree que es el catálogo completo si no lo es.
+5. **Timeout:** si el `stockTable` crece mucho, subir `LLM_SHADOW_COMPARE_TIMEOUT_MS` en workers (ver §5).
+
+**Qué no hacer:** enviar 500 filas aleatorias “por si acaso”; mantiene el filtro **alineado al hilo** para que la respuesta sea natural y verificable fila a fila.
+
 ### Campos más importantes para el agente
 
 | Campo | Por qué importa |
@@ -258,10 +277,23 @@ El servicio devuelve:
 - El cliente **no recibe** el `draftReply` del crew — recibe la respuesta del sistema base de Waseller.
 - Usar el diff para medir cuánto mejora el crew respecto al baseline.
 
-### En modo primary (fase siguiente)
+### En modo primary / evolución desde shadow
 
-- Cuando las métricas de diff muestran que el crew supera al baseline consistentemente, evaluar usar `candidateDecision.draftReply` como la respuesta real al lead.
-- Esto requiere decisión de producto, no solo técnica.
+- Cuando las métricas de diff muestran que el crew supera al baseline consistentemente, Waseller puede usar `candidateDecision.draftReply` como **mensaje real** al lead (y fusionar `candidateInterpretation` si viene).
+- Sigue siendo decisión de producto/ops, no solo de este repo.
+
+### Sole mode (Waseller): crew en el texto, worker como orquestador
+
+En **sole mode** el copy conversacional que antes armaba el lead con **plantillas** pasa a depender del **crew** cuando el POST responde bien y esa salida se aplica como **primaria** (payload completo: `stockTable`, `recentMessages`, etc.). Aun así **Waseller no “apaga”** el worker ni delega todo el negocio al microservicio waseller-crew.
+
+| Pieza | Rol |
+|--------|-----|
+| **waseller-crew** | Genera `candidateDecision` / `candidateInterpretation`; el texto de venta que ve el usuario en sole es el del crew **solo si** la respuesta se aplica como primaria tras el POST. |
+| **Lead worker (Waseller)** | Sigue siendo el **orquestador local**: arma **stub** y **baseline** para el crew, ejecuta el **POST**, shadow-compare si está configurado, **guardrails**, actualización de **lead / DB**; en sole **omite plantillas** de venta para no duplicar CPU ni texto con el crew. |
+| **Operativo en worker** | Puede seguir ejecutando acciones que **no** son el párrafo del crew, p. ej. **link de Mercado Pago** cuando `shouldGeneratePaymentLink` y hay variante, u otras reglas producto. |
+| **Si el crew no aplica** | Handoff o **mensaje de respaldo** (baseline / reglas), **salvo** que ya exista una respuesta útil de **pago** (plantillas MP) para **no pisar** algo valioso. |
+
+**Resumen:** en sole, el texto de venta “natural” lo lleva el crew **cuando** responde bien y Waseller lo adopta; **pagos, persistencia, fallbacks y reglas duras** siguen en Waseller salvo acuerdo explícito de otro diseño (p. ej. mover solo MP al crew sería un proyecto aparte).
 
 ### Campos a persistir en la traza
 
@@ -280,17 +312,20 @@ Guardar al menos: `candidateDecision.draftReply`, `candidateDecision.nextAction`
 - [ ] `recentMessages` se envía con los últimos 8 mensajes de la conversación
 - [ ] `interpretation` se envía con la lectura OpenAI/reglas de Waseller (intent, entidades, `nextAction` sugerido, etc.)
 - [ ] `baselineDecision` completo para merge y fallback de `draftReply`
-- [ ] `stockTable` se envía filtrado (solo variantes relevantes con stock > 0)
+- [ ] `stockTable` se envía filtrado (solo variantes relevantes con stock > 0), y **se re-arma o amplía** tras un giro claro de producto/rubro (§4 «Re-ampliar stockTable»)
 - [ ] `businessProfileSlug` se envía con el slug del rubro del tenant
 - [ ] `inventoryNarrowingNote` se incluye cuando el inventario fue filtrado
 - [ ] Opcionales alineados al contrato: `tenantCommercialContext`, `tenantBrief`, `etapa`, `activeOffer`, `memoryFacts`, `publicCatalogSlug`, `publicCatalogBaseUrl` (catálogo público `/tienda/{slug}`; ver `docs/CONTRATO_HTTP_V1_1.md` y `docs/integrations/waseller-crew/README.md`)
+- [ ] **`tenantRuntimeContext`** (opcional): Waseller puede enviarlo embebido en el body; waseller-crew lo parsea y lo inyecta al contexto del agente. Si falta (`OMIT_TENANT_RUNTIME_CONTEXT` u omisión), seguir operando con `tenantBrief` + `stockTable` + campos raíz (sin consultar la DB de Waseller desde el crew).
 
 ### Configuración por tenant
 - [ ] Cada tenant tiene asignado su `businessProfileSlug` en Waseller
 - [ ] Los slugs usados existen en waseller-crew (verificar con el equipo de crew)
 
 ### Verificación
+- [ ] En **sole mode**, confirmar merge de `draftReply` primario + no pisar respuestas MP ya generadas; worker sigue orquestando POST, DB y operativa (ver §6 «Sole mode»)
 - [ ] Smoke test con `fixtures/request.v1_1.example.json` contra el endpoint de producción
+- [ ] Opcional: smoke con `fixtures/request.topic_pivot_enriched_stock.json` (hilo con giro a exterior + `stockTable` de varias líneas coherentes)
 - [ ] Verificar en logs de waseller-crew que llegan eventos `shadow_compare_completed`
 - [ ] Verificar que `correlation_id` en logs de crew coincide con el de Waseller para correlacionar trazas
 
@@ -304,8 +339,9 @@ waseller-crew ajustó **prompt** y **guards** post-LLM para estos casos:
 |-----------|-----------------------------------------------|-----------------------------------------------|
 | El lead pide **asesor / persona / derivación** | `handoff_human` | Confirmar derivación **sin** repetir la ficha ni insistir con reserva; invitar a seguir explorando el catálogo con criterios (rubro, nombre, palabras clave), honesto respecto al subconjunto enviado en `stockTable`. |
 | El lead **niega** la reserva o el cierre (“no”, “no gracias”, etc.) y el borrador seguía empujando reserva | `reply_only` (o el que defina el merge) | **No** repetir el mismo “¿te reservo?”; respuesta breve + invitación a seguir el catálogo con búsqueda; sin inventar productos fuera de `stockTable`. |
+| El lead **cambia de producto o rubro** (p. ej. “mesa de exterior”, “en su lugar…”, “no quiero eso”) y el borrador **repite** el mismo guion (misma ficha + “decime qué talle…”) | `ask_clarification` (típico tras guard) | Reconocer el giro, delimitar honestamente qué hay en `stockTable` (una fila vs varias), invitar al catálogo público si mandaron slug/base; no inventar filas nuevas. |
 
-**Variables de entorno opcionales en waseller-crew** (por defecto activas): `CREW_SHADOW_HANDOFF_REQUEST_GUARD`, `CREW_SHADOW_NEGATION_FOLLOWUP_GUARD`. Solo hace falta tocarlas si querés desactivar el comportamiento en un entorno de prueba.
+**Variables de entorno opcionales en waseller-crew** (por defecto activas): `CREW_SHADOW_HANDOFF_REQUEST_GUARD`, `CREW_SHADOW_NEGATION_FOLLOWUP_GUARD`, `CREW_SHADOW_TOPIC_PIVOT_GUARD`. Solo hace falta tocarlas si querés desactivar el comportamiento en un entorno de prueba.
 
 ### Texto listo para pegar en un issue/PR de Waseller main
 
