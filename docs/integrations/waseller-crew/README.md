@@ -1,6 +1,6 @@
 # Waseller ↔ waseller-crew (integración)
 
-**Fuente de verdad extendida en el monorepo Waseller:** `docs/integrations/waseller-crew/CONTRATO_V1_1.md` (si existe allí). En **waseller-crew** el resumen implementado y los campos HTTP están en [`../../CONTRATO_HTTP_V1_1.md`](../../CONTRATO_HTTP_V1_1.md).
+**Fuente de verdad extendida en el monorepo Waseller:** `docs/integrations/waseller-crew/CONTRATO_V1_1.md` (si existe allí). En **waseller-crew** el resumen implementado y los campos HTTP están en [`../../CONTRATO_HTTP_V1_1.md`](../../CONTRATO_HTTP_V1_1.md). Para verificación cruzada con workers y tipos TS: [`../../SINCRONIZACION_WASELLER_CREW_TYPESCRIPT.md`](../../SINCRONIZACION_WASELLER_CREW_TYPESCRIPT.md).
 
 ## Endpoints
 
