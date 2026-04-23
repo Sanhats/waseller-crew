@@ -55,6 +55,14 @@ def test_health(client: TestClient) -> None:
     assert r.json() == {"ok": True}
 
 
+def test_incoming_suggests_stop_variants() -> None:
+    from crew_shadow_crewai.draft_variant_guard import incoming_suggests_stop_or_rejection
+
+    assert incoming_suggests_stop_or_rejection("no gracias!") is True
+    assert incoming_suggests_stop_or_rejection("gracias no") is True
+    assert incoming_suggests_stop_or_rejection("nop") is True
+
+
 def test_shadow_compare_stub(client: TestClient) -> None:
     fixture = Path(__file__).resolve().parents[1] / "fixtures" / "request.example.json"
     body = json.loads(fixture.read_text(encoding="utf-8"))
@@ -62,12 +70,48 @@ def test_shadow_compare_stub(client: TestClient) -> None:
     assert r.status_code == 200
     data = r.json()
     assert data["candidateDecision"] is not None
-    assert "[crew-stub]" in data["candidateDecision"]["draftReply"]
+    reason = data["candidateDecision"].get("reason") or ""
+    assert reason.startswith("stub")
+    dr = data["candidateDecision"]["draftReply"] or ""
+    assert dr.strip()
+    # El stub se enriquece con baseline y luego pasan los guards (p. ej. precio duplicado vs baseline).
+    assert "[crew-stub]" in dr or "price_followup_guard" in reason
     assert data["candidateDecision"]["nextAction"] == "reply_only"
     assert data["candidateInterpretation"] is not None
     assert data["candidateInterpretation"]["intent"] == "consultar_precio"
     assert data["candidateInterpretation"]["nextAction"] == "reply_only"
     assert data["candidateInterpretation"]["source"] == "openai"
+
+
+def test_shadow_compare_stub_negation_rewrites_pitch(client: TestClient) -> None:
+    """Stub + guards: negación corta no debe dejar el mismo pitch de reserva del baseline."""
+    body = {
+        "schemaVersion": 1,
+        "kind": "waseller.shadow_compare.v1",
+        "tenantId": "00000000-0000-4000-8000-000000000001",
+        "leadId": "00000000-0000-4000-8000-000000000002",
+        "incomingText": "no gracias!",
+        "interpretation": {},
+        "baselineDecision": {
+            "draftReply": (
+                "Te confirmo Mesa de algarrobo: precio $195.000 y 2 unidad(es) disponibles. "
+                "¿Querés que te reserve una ahora?"
+            ),
+            "nextAction": "offer_reservation",
+            "recommendedAction": "offer_reservation",
+            "confidence": 0.5,
+            "reason": "baseline_waseller",
+        },
+        "stockTable": [{"name": "Mesa algarrobo", "stock": 2}],
+    }
+    r = client.post("/shadow-compare", json=body)
+    assert r.status_code == 200
+    data = r.json()
+    dr = (data["candidateDecision"] or {}).get("draftReply") or ""
+    assert "Te confirmo" not in dr
+    assert "querés que te reserve" not in dr.lower()
+    assert "catálogo" in dr.lower()
+    assert "negation_followup_guard" in (data["candidateDecision"].get("reason") or "")
 
 
 def test_shadow_response_from_crew_dict_nested_and_flat() -> None:
@@ -151,7 +195,11 @@ def test_shadow_compare_v1_1_fixture_stub(client: TestClient) -> None:
     assert r.status_code == 200
     data = r.json()
     assert data["candidateDecision"] is not None
-    assert "[crew-stub]" in data["candidateDecision"]["draftReply"]
+    reason = data["candidateDecision"].get("reason") or ""
+    assert reason.startswith("stub")
+    dr = data["candidateDecision"]["draftReply"] or ""
+    assert dr.strip()
+    assert "[crew-stub]" in dr or "price_followup_guard" in reason
 
 
 def test_shadow_compare_bearer_required(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:

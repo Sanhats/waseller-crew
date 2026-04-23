@@ -535,11 +535,14 @@ def build_price_short_reply(draft: str) -> str:
 _NEGATION_DUPLICATE_RE = re.compile(
     r"(?:"
     r"^no\s*[\.,]?\s*$"
+    r"|^\s*nop\s*[!?.…]*\s*$"
+    r"|\b(?:nono|no\s+no)\b"
     r"|no\s*,\s*no\s+quiero\b"
     r"|\bno\s+quiero\b"
     r"|\bno\s+me\s+interesa\b"
     r"|\bno\s+gracias\b"
     r"|\bno\s*,\s*gracias\b"
+    r"|\bgracias\s*,?\s*no\b"
     r")",
     re.IGNORECASE | re.UNICODE,
 )
@@ -559,11 +562,19 @@ def _is_pushy_reservation_pitch(draft: str) -> bool:
             "te confirmo",
             "queres que te reserve",
             "queres que te reserv",
+            "queres que lo reserve",
+            "queres que la reserve",
             "te reservo",
+            "te lo reservo",
+            "te la reservo",
             "te reserve una",
             "te reservo una",
             "reservamos",
             "reservo una",
+            "unidad(es) disponibles",
+            "unidades disponibles",
+            "te aparto",
+            "te lo aparto",
         )
     )
 
@@ -761,9 +772,9 @@ def apply_followup_draft_guards(
 ) -> ShadowCompareResponse:
     """Cadena de salvaguardas post-LLM (orden importa)."""
     resp = apply_handoff_request_guard(body, resp)
+    resp = apply_negation_followup_guard(body, resp)
     resp = apply_multi_variant_list_guard(body, resp)
     resp = apply_variant_followup_guard(body, resp)
-    resp = apply_negation_followup_guard(body, resp)
     resp = apply_price_followup_guard(body, resp)
     resp = apply_quantity_vs_stock_guard(body, resp)
     resp = apply_catalog_scope_guard(body, resp)

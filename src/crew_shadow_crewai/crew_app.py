@@ -184,8 +184,9 @@ def _sales_and_stock_rules(body: ShadowCompareRequest) -> str:
         "'¿Querés que lo aparte?'. Usá nextAction `offer_reservation` o `reserve_stock` según el caso. "
         "No termines el mensaje sin un paso concreto propuesto **salvo** que aplique la excepción siguiente.\n"
         "- **Excepción — derivación o negativa al cierre:** Si el lead pide **asesor**, **persona humana** "
-        "o **derivación**, o **rechaza** la reserva o la pregunta de cierre ('no', 'no gracias', 'no quiero', "
-        "etc.): **no** repitas la misma ficha de producto ni el mismo CTA de reserva. En derivación usá "
+        "o **derivación**, o **rechaza** la reserva o la pregunta de cierre ('no', 'no gracias', 'no gracias!', "
+        "'gracias no', 'no quiero', etc.): **no** repitas la misma ficha de producto ni el mismo CTA de reserva. "
+        "En derivación usá "
         "`handoff_human` y `recommendedAction` acorde; en rechazo claro usá `reply_only` o `ask_clarification`. "
         "Cerrá con **invitación a seguir explorando el catálogo**: pedí rubro, nombre o palabras clave; si en "
         "stockTable hay **otras filas** distintas, podés mencionar que en este envío hay más líneas para que "
@@ -294,6 +295,12 @@ def _enrich_empty_draft_reply(resp: ShadowCompareResponse, body: ShadowCompareRe
         candidateDecision=cd.model_copy(update={"draftReply": fallback[:2000]}),
         candidateInterpretation=resp.candidateInterpretation,
     )
+
+
+def _finalize_shadow_response(body: ShadowCompareRequest, resp: ShadowCompareResponse) -> ShadowCompareResponse:
+    """Misma cadena de guards post-borrador en stub, LLM ok o fallback por error."""
+    resp = apply_followup_draft_guards(body, resp)
+    return _enrich_empty_draft_reply(resp, body)
 
 
 def _shadow_response_from_crew_dict(data: dict[str, Any]) -> ShadowCompareResponse:
@@ -668,14 +675,13 @@ def _openai_failure_hint(exc: BaseException) -> str | None:
 def run_crew(body: ShadowCompareRequest) -> ShadowCompareResponse:
     if _use_crew_stub():
         log.info("USE_CREW_STUB activo: respuesta stub")
-        return _stub_response(body)
+        return _finalize_shadow_response(body, _stub_response(body))
     if not effective_normalized_openai_api_key()[0]:
         log.warning("CREW_OPENAI_API_KEY / OPENAI_API_KEY ausente: usando stub")
-        return _stub_response(body)
+        return _finalize_shadow_response(body, _stub_response(body))
     try:
         resp = _crew_llm_response(body)
-        resp = apply_followup_draft_guards(body, resp)
-        return _enrich_empty_draft_reply(resp, body)
+        return _finalize_shadow_response(body, resp)
     except Exception as e:
         hint = _openai_failure_hint(e)
         log.error(
@@ -688,4 +694,4 @@ def run_crew(body: ShadowCompareRequest) -> ShadowCompareResponse:
             ),
             exc_info=True,
         )
-        return _stub_response(body)
+        return _finalize_shadow_response(body, _stub_response(body))
